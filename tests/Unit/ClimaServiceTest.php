@@ -4,10 +4,10 @@ namespace Tests\Unit;
 
 use App\DTOs\DadosClima;
 use App\Exceptions\CidadeNaoEncontradaException;
-use App\Models\ConsultaClima;
-use App\Providers\Weather\WeatherProviderInterface;
-use App\Repositories\ConsultaClimaRepository;
-use App\Services\ClimaService;
+use App\Models\Clima\ConsultaClima;
+use App\Interfaces\WeatherProviderInterface;
+use App\Repositories\Clima\ConsultaClimaRepository;
+use App\Services\Clima\ClimaService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Mockery;

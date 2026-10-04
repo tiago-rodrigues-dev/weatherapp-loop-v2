@@ -2,7 +2,7 @@
 
 namespace App\DTOs;
 
-use App\Models\ConsultaClima;
+use App\Models\Clima\ConsultaClima;
 use Illuminate\Support\Str;
 
 final readonly class DadosClima

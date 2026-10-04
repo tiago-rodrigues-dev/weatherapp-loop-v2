@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\ConsultaClima;
+use App\Models\Clima\ConsultaClima;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;

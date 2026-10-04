@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Municipio\Models;
+namespace App\Models\Municipio;
 
 use Illuminate\Database\Eloquent\Model;
 

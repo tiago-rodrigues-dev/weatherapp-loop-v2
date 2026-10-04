@@ -6,6 +6,7 @@ use App\DTOs\DadosClima;
 use App\Exceptions\CidadeNaoEncontradaException;
 use App\Exceptions\FalhaApiClimaException;
 use App\Exceptions\ServicoClimaIndisponivelException;
+use App\Interfaces\WeatherProviderInterface;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;

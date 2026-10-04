@@ -1,10 +1,11 @@
 <?php
 
-namespace Database\Seeders;
+namespace Database\Seeders\Municipio;
 
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class MunicipioSeeder extends Seeder
@@ -29,7 +30,7 @@ class MunicipioSeeder extends Seeder
             foreach ($estado['cidades'] as $cidade) {
                 $registros[] = [
                     'nome' => $cidade,
-                    'nome_normalizado' => mb_strtolower($cidade),
+                    'nome_normalizado' => Str::lower(Str::ascii($cidade)),
                     'uf' => $estado['sigla'],
                     'created_at' => $agora,
                     'updated_at' => $agora,

@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Repositories\MunicipioRepository;
-use App\Services\MunicipioService;
+use App\Repositories\Municipio\MunicipioRepository;
+use App\Services\Municipio\MunicipioService;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;

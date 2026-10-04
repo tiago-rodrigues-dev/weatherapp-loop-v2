@@ -14,6 +14,6 @@ class MunicipioRepository
             ->orderByRAW('CASE WHEN nome_normalizado LIKE ? THEN 0 ELSE 1 END', ["$termoNormalizado%"])
             ->orderBy('nome')
             ->limit($limite)
-            ->get('id', 'nome', 'uf');
+            ->get(['id', 'nome', 'uf']);
     }
 }

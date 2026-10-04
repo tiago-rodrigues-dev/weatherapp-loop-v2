@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Providers\Weather;
+namespace App\Interfaces;
 
 use App\DTOs\DadosClima;
 use App\Exceptions\ClimaException;

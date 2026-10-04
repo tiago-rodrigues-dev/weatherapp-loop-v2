@@ -1,10 +1,9 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\Clima;
 
-use App\DTOs\ResultadoRegistroClima;
-use App\Providers\Weather\WeatherProviderInterface;
-use App\Repositories\ConsultaClimaRepository;
+use App\Interfaces\WeatherProviderInterface;
+use App\Repositories\Clima\ConsultaClimaRepository;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 

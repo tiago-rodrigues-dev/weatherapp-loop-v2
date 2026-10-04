@@ -2,10 +2,10 @@
 
 namespace App\Http\Controllers\Municipio;
 
-use App\Services\Municipio\MunicipioService;
-use Illuminate\Http\Request;
-use App\Http\Requests\BuscarMunicipioRequest;
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Municipio\BuscarMunicipioRequest;
 use App\Http\Resources\Municipio\MunicipioResource;
+use App\Services\Municipio\MunicipioService;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class MunicipioController extends Controller

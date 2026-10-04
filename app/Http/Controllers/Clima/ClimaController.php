@@ -2,10 +2,11 @@
 
 namespace App\Http\Controllers\Clima;
 
-use App\Http\Requests\HistoricoClimaRequest;
-use App\Http\Requests\RegistrarClimaRequest;
-use App\Services\ClimaService;
+use App\Http\Requests\Clima\HistoricoClimaRequest;
+use App\Http\Requests\Clima\RegistrarClimaRequest;
+use App\Services\Clima\ClimaService;
 use Illuminate\Http\JsonResponse;
+use App\Http\Controllers\Controller;
 
 class ClimaController extends Controller
 {
