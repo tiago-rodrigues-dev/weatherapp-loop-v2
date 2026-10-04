@@ -11,7 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('consulta_clima', function (Blueprint $table) {
+        Schema::create('consulta_clima', function (Blueprint $table) {
             $table->id();
             $table->string('cidade');
             $table->string('cidade_slug');
@@ -31,8 +31,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('consulta_clima', function (Blueprint $table) {
-            Schema::dropIfExists('consulta_clima');
-        });
+        Schema::dropIfExists('consulta_clima');
     }
 };
