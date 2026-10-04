@@ -13,6 +13,7 @@ final readonly class DadosClima
         public float $sensacaoTermica,
         public int $umidade,
         public string $descricao,
+        public ?float $ventoKmh = null,
     ) {}
 
     public function cidadeSlug(): string

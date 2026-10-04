@@ -15,6 +15,7 @@ class ConsultaClima extends Model
         'sensacao_termica',
         'umidade',
         'descricao',
+        'vento_kmh',
         'consultado_em',
     ];
 
@@ -26,6 +27,7 @@ class ConsultaClima extends Model
             'temperatura' => 'float',
             'sensacao_termica' => 'float',
             'umidade' => 'integer',
+            'vento_kmh' => 'float',
             'consultado_em' => 'datetime',
         ];
     }

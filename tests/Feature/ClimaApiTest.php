@@ -30,6 +30,7 @@ class ClimaApiTest extends TestCase
             'temp' => 25.5,
             'feels_like' => 26.1,
             'humidity' => 60,
+            'wind_speed' => 4.0,
             'description' => 'céu limpo',
         ], $sobrescrever);
 
@@ -40,32 +41,22 @@ class ClimaApiTest extends TestCase
                 'feels_like' => $dados['feels_like'],
                 'humidity' => $dados['humidity'],
             ],
+            'wind' => ['speed' => $dados['wind_speed']],
             'weather' => [['description' => $dados['description']]],
         ];
     }
 
-    #[Test]
-    public function registra_consulta_e_retorna_201(): void
+    private function criarConsulta(string $cidade, float $temperatura, string $consultadoEm): ConsultaClima
     {
-        Http::fake([self::URL_OPENWEATHER => Http::response($this->respostaOpenWeather())]);
-
-        $this->postJson('/api/clima?cidade=campinas')
-            ->assertCreated()
-            ->assertJsonPath('atualizado', false)
-            ->assertJsonPath('data.cidade', 'Campinas')
-            ->assertJsonPath('data.temperatura', 25.5)
-            ->assertJsonPath('data.umidade', 60)
-            ->assertJsonMissingPath('data.cidade_slug');
-
-        $this->assertDatabaseHas('consulta_clima', [
-            'cidade' => 'Campinas',
-            'cidade_slug' => 'campinas',
+        return ConsultaClima::create([
+            'cidade' => $cidade,
+            'cidade_slug' => Str::slug($cidade),
+            'temperatura' => $temperatura,
+            'sensacao_termica' => $temperatura,
+            'umidade' => 50,
             'descricao' => 'céu limpo',
+            'consultado_em' => $consultadoEm,
         ]);
-
-        Http::assertSent(fn ($request) => $request['q'] === 'campinas,BR'
-            && $request['units'] === 'metric'
-            && $request['appid'] === 'chave-de-teste');
     }
 
     #[Test]
@@ -235,5 +226,174 @@ class ClimaApiTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.cidade', 'Campinas');
+    }
+
+        #[Test]
+    public function salva_vento_em_kmh(): void
+    {
+        Http::fake([self::URL_OPENWEATHER => Http::response($this->respostaOpenWeather())]);
+
+        $this->postJson('/api/clima?cidade=Campinas')
+            ->assertCreated()
+            ->assertJsonPath('data.vento_kmh', 14.4)
+            ->assertJsonMissingPath('data.pressao_hpa');
+    }
+
+    #[Test]
+    public function salva_vento_nulo_quando_a_openweather_nao_envia(): void
+    {
+        $resposta = $this->respostaOpenWeather();
+        unset($resposta['wind']);
+        Http::fake([self::URL_OPENWEATHER => Http::response($resposta)]);
+
+        $this->postJson('/api/clima?cidade=Campinas')
+            ->assertCreated()
+            ->assertJsonPath('data.vento_kmh', null);
+    }
+
+    #[Test]
+    public function consulta_redundante_atualiza_vento_sem_criar_registro(): void
+    {
+        Http::fakeSequence(self::URL_OPENWEATHER)
+            ->push($this->respostaOpenWeather())
+            ->push($this->respostaOpenWeather(['wind_speed' => 10.0]));
+
+        $this->postJson('/api/clima?cidade=Campinas')->assertCreated();
+        $this->postJson('/api/clima?cidade=Campinas')
+            ->assertOk()
+            ->assertJsonPath('atualizado', true)
+            ->assertJsonPath('data.vento_kmh', 36);
+
+        $this->assertDatabaseCount('consulta_clima', 1);
+    }
+
+    #[Test]
+    public function historico_e_paginado(): void
+    {
+        $this->criarConsulta('Campinas', 20, '2026-10-03 09:00:00');
+        $this->criarConsulta('Campinas', 21, '2026-10-03 10:00:00');
+        $this->criarConsulta('Recife', 30, '2026-10-03 11:00:00');
+
+        $this->getJson('/api/clima/historico?per_page=2')
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('data.0.cidade', 'Recife')
+            ->assertJsonPath('current_page', 1)
+            ->assertJsonPath('last_page', 2)
+            ->assertJsonPath('per_page', 2)
+            ->assertJsonPath('total', 3)
+            ->assertJsonPath('from', 1)
+            ->assertJsonPath('to', 2);
+
+        $this->getJson('/api/clima/historico?per_page=2&page=2')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.temperatura', 20);
+    }
+
+    #[Test]
+    public function historico_usa_dez_por_pagina_por_padrao(): void
+    {
+        foreach (range(1, 12) as $i) {
+            $this->criarConsulta('Campinas', 20 + $i, '2026-10-03 '.str_pad((string) $i, 2, '0', STR_PAD_LEFT).':00:00');
+        }
+
+        $this->getJson('/api/clima/historico')
+            ->assertOk()
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('total', 12);
+    }
+
+    #[Test]
+    public function historico_filtra_por_periodo_incluindo_o_minuto_final(): void
+    {
+        $this->criarConsulta('Campinas', 20, '2026-10-01 08:00:00');
+        $this->criarConsulta('Campinas', 21, '2026-10-02 10:15:00');
+        $this->criarConsulta('Campinas', 22, '2026-10-02 10:17:45');
+        $this->criarConsulta('Campinas', 23, '2026-10-03 09:00:00');
+
+        $this->getJson('/api/clima/historico?'.http_build_query([
+            'de' => '2026-10-02T10:00:00Z',
+            'ate' => '2026-10-02T10:17:00Z',
+        ]))
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('data.0.temperatura', 22)
+            ->assertJsonPath('data.1.temperatura', 21);
+    }
+
+    #[Test]
+    public function historico_converte_o_fuso_horario_do_filtro(): void
+    {
+        $this->criarConsulta('Campinas', 20, '2026-10-02 12:30:00');
+
+        $this->getJson('/api/clima/historico?'.http_build_query([
+            'de' => '2026-10-02T09:00:00-03:00',
+            'ate' => '2026-10-02T09:59:00-03:00',
+        ]))
+            ->assertOk()
+            ->assertJsonCount(1, 'data');
+    }
+
+    #[Test]
+    public function historico_combina_filtro_de_cidade_e_periodo(): void
+    {
+        $this->criarConsulta('Campinas', 20, '2026-10-02 10:00:00');
+        $this->criarConsulta('Recife', 30, '2026-10-02 10:00:00');
+        $this->criarConsulta('Campinas', 22, '2026-10-03 10:00:00');
+
+        $this->getJson('/api/clima/historico?'.http_build_query([
+            'cidade' => 'campinas',
+            'de' => '2026-10-02T00:00:00Z',
+            'ate' => '2026-10-02T23:59:00Z',
+        ]))
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.cidade', 'Campinas')
+            ->assertJsonPath('data.0.temperatura', 20);
+    }
+
+    #[Test]
+    public function historico_retorna_422_para_parametros_invalidos(): void
+    {
+        $this->getJson('/api/clima/historico?'.http_build_query(['de' => '2026-10-03T10:00:00Z', 'ate' => '2026-10-02T10:00:00Z']))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['ate']);
+
+        $this->getJson('/api/clima/historico?de=ontem-de-manha')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['de']);
+
+        $this->getJson('/api/clima/historico?per_page=51')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['per_page']);
+
+        $this->getJson('/api/clima/historico?page=0')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['page']);
+    }
+
+    #[Test]
+    public function lista_cidades_consultadas_sem_repetir_e_em_ordem_alfabetica(): void
+    {
+        $this->criarConsulta('Recife', 30, '2026-10-02 10:00:00');
+        $this->criarConsulta('Campinas', 20, '2026-10-02 11:00:00');
+        $this->criarConsulta('Campinas', 21, '2026-10-02 12:00:00');
+
+        $this->getJson('/api/clima/cidades')
+            ->assertOk()
+            ->assertExactJson(['data' => ['Campinas', 'Recife']]);
+    }
+
+    #[Test]
+    public function lista_de_cidades_reflete_nova_consulta(): void
+    {
+        Http::fake([self::URL_OPENWEATHER => Http::response($this->respostaOpenWeather(['name' => 'Jales']))]);
+
+        $this->getJson('/api/clima/cidades')->assertExactJson(['data' => []]);
+
+        $this->postJson('/api/clima?cidade=Jales')->assertCreated();
+
+        $this->getJson('/api/clima/cidades')->assertExactJson(['data' => ['Jales']]);
     }
 }

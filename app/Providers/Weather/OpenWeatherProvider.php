@@ -75,6 +75,7 @@ class OpenWeatherProvider implements WeatherProviderInterface
             sensacaoTermica: (float) $dados['main']['feels_like'],
             umidade: (int) $dados['main']['humidity'],
             descricao: $dados['weather'][0]['description'],
+            ventoKmh: isset($dados['wind']['speed']) ? round($dados['wind']['speed'] * 3.6, 1) : null,
         );
     }
 }

@@ -24,8 +24,11 @@ class ClimaController extends Controller
 
     public function historico(HistoricoClimaRequest $request): JsonResponse
     {
-        return response()->json([
-            'data' => $this->service->historico($request->validated('cidade')),
-        ]);
+        return response()->json($this->service->historico($request->validated()));
+    }
+
+    public function cidades(): JsonResponse
+    {
+        return response()->json(['data' => $this->service->cidades()]);
     }
 }

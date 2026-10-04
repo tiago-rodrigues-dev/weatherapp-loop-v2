@@ -6,23 +6,17 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::table('consulta_clima', function (Blueprint $table) {
-            //
+            $table->decimal('vento_kmh', 5, 1)->nullable()->after('descricao');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('consulta_clima', function (Blueprint $table) {
-            //
+            $table->dropColumn('vento_kmh');
         });
     }
 };
