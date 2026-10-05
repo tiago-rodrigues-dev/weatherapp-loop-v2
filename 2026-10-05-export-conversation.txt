@@ -1,0 +1,2774 @@
+ ▐▛███▛█   Claude Code v2.1.289
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   ~/weatherapp-loopv2
+
+▎ Your voice can help guide AI
+▎ Take 15 min to share your experiences with Anthropic Interviewer. Start now
+
+❯ /voice                                                                        
+  ⎿  Voice mode enabled (hold). Hold space to record. Dictation language: en (/config to change).
+
+❯ /config                                                                       
+  ⎿  Set response language to Português Brasileiro
+
+❯ /plan                                                                         
+  ⎿  Enabled plan mode
+
+❯ Leia o arquivo tarefa-parte1.md e, e trace um plano sobre esse prompt que eu  
+  criei e se você ficou com dúvida me pergunte antes de começar                 
+
+● Switched to Opus 5.5 — now your default model · Fable 5 requires usage
+  credits · /model to change
+
+● Vou ler o arquivo tarefa-parte1.md e dar uma olhada na estrutura do projeto.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Li a tarefa e confirmei que o projeto usa Laravel 13 com PHP 8.3, SQLite e
+  cache em database; notei que routes/api.php ainda não existe e que
+  cidades.json na raiz está vazio (0 bytes). Antes de montar o plano, preciso
+  esclarecer algumas dúvidas.
+
+● User answered Claude's questions:
+  ⎿  · O cidades.json está vazio (0 bytes). Qual é o formato dele? O seeder 
+     depende disso. → Colei
+     · Na regra de não duplicar: quando um registro conta como 'redundante'? → 
+     Última consulta igual (Recomendado)
+     · Como deve ser a rota de histórico e o cache dela? → Filtro opcional + 
+     invalida (Recomendado)
+     · Como a cidade será enviada ao POST e à OpenWeather? → Só cidade
+
+  Listed 1 directory (ctrl+o to expand)
+
+● O cidades.json vem agrupado por estado
+  ({"estados":[{"sigla","nome","cidades":[...]}]}). Agora tenho o que preciso
+  para escrever o plano.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: 
+     ~/.claude/plans/leia-o-arquivo-tarefa-parte1-md-abundant-clarke.md · /plan 
+     to edit
+     Plano: API de Tempo (tarefa-parte1.md)
+
+     Contexto
+
+     O tarefa-parte1.md pede uma API Laravel com três rotas:
+     - autocomplete de municípios, a partir do cidades.json;
+     - registro do clima de uma cidade, via OpenWeatherMap;
+     - histórico das consultas, com cache.
+
+     O banco é SQLite, e a regra anti-duplicidade e os testes são obrigatórios.
+     O usuário vai implementar manualmente, então o entregável é um único 
+     arquivo implementacao.md na raiz do projeto. Ele traz o código de cada
+     arquivo com uma breve descrição acima de cada um. Nenhum arquivo da
+     aplicação será criado ou alterado por mim.
+
+     Estado atual: Laravel 13, PHP 8.3, DB_CONNECTION=sqlite,
+     CACHE_STORE=database (nos testes, array). Ainda não existe routes/api.php.
+     O bootstrap/app.php já renderiza JSON para api/*. O cidades.json tem o
+     formato
+     {"estados":[{"sigla":"AC","nome":"Acre","cidades":["Acrelândia",...]}]}.
+
+     Decisões confirmadas com o usuário
+
+     - Duplicidade: a nova consulta é comparada com a última consulta da mesma 
+       cidade. Se temperatura, sensação, umidade e descrição forem iguais, só o
+       consultado_em é atualizado. Se algum valor mudar, um novo registro é
+       criado.
+     - Histórico: GET /api/clima/historico?cidade=X, com o filtro de cidade
+       opcional e ordem do mais recente para o mais antigo. O cache tem TTL e é
+       invalidado a cada criação ou atualização.
+     - POST: POST /api/clima?cidade=Campinas, só com o nome da cidade e sem
+       validar na tabela de municípios. A OpenWeather recebe q=Campinas,BR.
+
+     Decisões de design (minhas)
+
+     - O nome salvo é o que a OpenWeather devolve (name), para padronizar a
+       grafia. Além dele, guardo cidade_slug (Str::slug), que serve para três
+       coisas: achar a última consulta, filtrar o histórico e montar a chave de
+       cache. Assim, "sao paulo" e "São Paulo" são tratados como a mesma cidade.
+     - A tabela de municípios ganha a coluna nome_normalizado (minúsculo e sem
+       acento). Sem ela, o LIKE do SQLite não acharia "São" ao buscar "sao".
+     - O provider fica atrás de uma interface (WeatherProviderInterface),
+       registrada no AppServiceProvider. Isso facilita o mock e uma eventual
+       troca de API.
+     - Cache: chaves clima:historico:todas e clima:historico:{slug}, com TTL de
+       10 min. Depois de gravar, o Service faz forget nas duas.
+     - Os erros usam exceções próprias com render() em JSON, no formato {"erro":
+       "mensagem"}:
+       - cidade não encontrada: 404;
+       - chave da API inválida ou erro 5xx da OpenWeather: 502;
+       - timeout ou falha de conexão: 503;
+       - validação: 422, com a mensagem em português no FormRequest.
+     - O POST responde 201 quando cria um registro e 200 quando só atualiza a
+       data. O corpo inclui o campo atualizado: true|false.
+     - A rota de autocomplete exige pelo menos 2 caracteres e devolve no máximo
+       10 resultados.
+
+     Estrutura que irá no implementacao.md (em ordem de implementação)
+
+     0. Setup: .env/.env.example (OPENWEATHER_API_KEY, OPENWEATHER_BASE_URL,
+        OPENWEATHER_TIMEOUT), config/services.php (bloco openweather) e
+        bootstrap/app.php (adicionar api: __DIR__.'/../routes/api.php' ao
+        withRouting).
+     1. Migrations: create_municipios_table (nome, nome_normalizado indexado, uf
+        char(2)) e create_consulta_clima_table (cidade, cidade_slug,
+        temperatura decimal(5,2), sensacao_termica decimal(5,2), umidade
+        unsignedTinyInt, descricao, consultado_em datetime, timestamps, índice
+        em (cidade_slug, consultado_em)).
+     2. Models: app/Models/Municipio.php e app/Models/ConsultaClima.php ($table 
+        = 'consulta_clima', casts).
+     3. Seeder: database/seeders/MunicipioSeeder.php. Ele lê
+        base_path('cidades.json'), percorre os estados e cidades, monta
+        nome_normalizado com Str::lower(Str::ascii()) e insere em lotes de 500
+        (truncate antes, para ser idempotente). O DatabaseSeeder passa a chamar
+        esse seeder.
+     4. Municípios (padrão Service/Repository):
+        Repositories/MunicipioRepository::buscarPorNome(),
+        Services/MunicipioService::autocomplete(),
+        Http/Requests/BuscarMunicipioRequest,
+        Http/Controllers/MunicipioController e Http/Resources/MunicipioResource.
+     5. Clima:
+        - DTOs/DadosClima (readonly, com igualA(ConsultaClima) comparando os
+          valores arredondados);
+        - Providers/Weather/WeatherProviderInterface e OpenWeatherProvider, que
+          usa Http::timeout()->get(.../weather, q, appid, units=metric, 
+          lang=pt_br) e mapeia 404, 401 e 5xx, além da ConnectionException;
+        - Repositories/ConsultaClimaRepository (ultimaPorCidade, criar,
+          atualizarDataConsulta, historico(?slug));
+        - Services/ClimaService (registrarConsulta(cidade) retorna o resultado
+          com a flag de criado ou atualizado; historico(?cidade) usa
+          Cache::remember);
+        - Http/Requests/RegistrarClimaRequest, Http/Controllers/ClimaController
+          e Http/Resources/ConsultaClimaResource.
+     6. Exceções: Exceptions/CidadeNaoEncontradaException,
+        Exceptions/ServicoClimaIndisponivelException e
+        Exceptions/FalhaApiClimaException, todas com render() em JSON.
+     7. Rotas: routes/api.php com GET /municipios?busca=, POST /clima?cidade= e
+        GET /clima/historico?cidade=. Registro do binding da interface no
+        AppServiceProvider.
+     8. Testes:
+        - tests/Unit/ClimaServiceTest.php, com Mockery no provider e no
+          repository. Casos cobertos:
+          - cria o registro quando não há consulta anterior;
+          - só atualiza a data quando os valores são iguais;
+          - cria um novo registro quando a temperatura muda;
+          - cria um novo registro quando só a umidade ou a descrição mudam;
+          - invalida o cache após gravar;
+          - no histórico, a segunda chamada não consulta o repository (o cache
+            funciona);
+          - o filtro por cidade usa uma chave própria;
+          - uma exceção do provider não grava nada.
+        - tests/Unit/MunicipioServiceTest.php.
+        - tests/Feature/ClimaApiTest.php, com Http::fake e
+          Http::preventStrayRequests. Casos cobertos:
+          - 201 ao criar;
+          - repetição idêntica retorna 200, mantém só 1 registro e atualiza
+            consultado_em (via travelTo);
+          - mudança de temperatura gera 2 registros;
+          - sem cidade retorna 422;
+          - cidade inexistente retorna 404;
+          - erro 500 da OpenWeather retorna 502;
+          - timeout retorna 503;
+          - histórico com e sem filtro;
+          - o histórico reflete um novo POST (invalidação do cache).
+        - tests/Feature/MunicipioApiTest.php: busca sem acento, limite de 10
+          resultados, termo curto retorna 422 e o seeder popula a tabela a
+          partir do JSON.
+     9. Como rodar: php artisan migrate --seed, php artisan test e exemplos de
+        curl.
+
+     Arquivo crítico
+
+     - Criar: /home/tiago/weatherapp-loopv2/implementacao.md (o único arquivo
+       que vou escrever).
+     - Referenciados no conteúdo (o usuário altera): bootstrap/app.php,
+       config/services.php, app/Providers/AppServiceProvider.php,
+       database/seeders/DatabaseSeeder.php e .env.
+
+     Observação
+
+     O CLAUDE.md do projeto sugere instalar o Laravel Boost antes de alterar a
+     aplicação. Como não vou alterar a aplicação, isso fica fora do escopo. Vou
+     mencionar no .md como passo opcional.
+
+     Verificação
+
+     - Revisar o implementacao.md para garantir que todos os namespaces, imports
+       e assinaturas batem entre os arquivos: Controller → Service →
+       Provider/Repository.
+     - Depois que o usuário implementar, rodar php artisan migrate:fresh --seed
+       (são cerca de 5.570 municípios), php artisan test (Unit + Feature, todos
+       verdes) e testar manualmente com curl -X POST 
+       "localhost:8000/api/clima?cidade=Campinas" duas vezes seguidas. Na
+       segunda chamada, a resposta deve ser 200 com atualizado: true.
+
+● Vou montar o código numa cópia no scratchpad e rodar os testes lá antes de
+  documentar tudo em implementacao.md, mantendo seu projeto original intocado.
+
+  Searched for 1 pattern, ran 2 shell commands (ctrl+o to expand)
+
+● Encontrei que config/cache.php tem serializable_classes => false, o que faz
+  models Eloquent quebrarem no store database em produção (algo que o store
+  array dos testes não detecta). Por isso vou armazenar arrays simples no
+  histórico e adicionar um teste usando o store database.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora os testes:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os 34 testes passaram. Vou confirmar que o teste do cache em banco realmente
+  pega o problema de serialização, quebrando o código de propósito por um
+  instante:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O teste falhou pelo tipo de retorno, e não pela desserialização que eu queria
+  provar. Vou checar o cenário exato: um array de models no cache em banco.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Confirmado que, com os models cacheados, a segunda requisição retorna cidade
+  nulo, o que o teste captura. Já restaurei e formatei o código com Pint (34
+  testes passando); agora vou rodar o seed real na cópia.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Tudo funcionando. Agora vou gerar o implementacao.md a partir dos arquivos
+  validados:
+
+● Bash(S=/tmp/claude-1000/-home-tiago-weatherapp-loopv2/72964788-c93c-4263-84eb-
+      a5fbdd3438fd/scratchpad/app; cd $S && python3 - <<'PYEOF'
+      import os…)
+  ⎿  1636 /home/tiago/weatherapp-loopv2/implementacao.md
+     40
+  ⎿  Shell cwd was reset to /home/tiago/weatherapp-loopv2
+  ⎿  1 file changed (binary, mode only or too large to show)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O implementacao.md está pronto na raiz do projeto, com 40 arquivos. Cada um
+  traz uma breve descrição e o código completo, na ordem sugerida de
+  implementação. Antes de escrever o documento, montei o código numa cópia do
+  projeto no scratchpad e validei tudo lá:
+  - 34 testes / 105 asserções passando;
+  - Pint sem pendências;
+  - migrate:fresh --seed real importando 5.595 municípios do seu cidades.json.
+
+  No seu projeto, o único arquivo novo é o implementacao.md. Nenhum código da
+  aplicação foi alterado.
+
+  Rotas:
+  - GET /api/municipios?busca=sao jo: autocomplete com no máximo 10 resultados,
+    sem diferenciar acentos nem maiúsculas. Os nomes que começam com o termo vêm
+    primeiro.
+  - POST /api/clima?cidade=Campinas: responde 201 quando cria um registro. Se os
+    quatro valores forem iguais aos da última consulta da cidade, só a data é
+    atualizada e a resposta é 200 com atualizado: true.
+  - GET /api/clima/historico?cidade=X: o filtro é opcional, e o cache é limpo a
+    cada gravação.
+
+  Um problema que encontrei: o config/cache.php do seu projeto tem
+  serializable_classes => false. Com isso, se o histórico guardasse models no
+  cache, eles voltariam corrompidos do cache em banco em produção, com os campos
+  nulos. Os testes não pegariam isso, porque usam o cache array. Por isso, o
+  cache guarda arrays simples. Incluí um teste que roda com o cache em banco e
+  confirmei que ele falha se alguém voltar a guardar models.
+
+  Diferenças em relação ao plano aprovado:
+  - Sem ConsultaClimaResource: o formato do JSON vem do próprio model, que
+    esconde o slug e os timestamps internos. Assim o POST e o histórico (que
+    precisa de arrays para o cache) usam o mesmo formato.
+  - Classes pequenas a mais:
+    - ClimaException, uma base comum que gera o {"erro": ...} com o status
+      certo;
+    - ResultadoRegistroClima, o retorno do service com a flag de criado ou
+      atualizado;
+    - HistoricoClimaRequest, que valida o filtro do histórico.
+  - 429 (limite de requisições) vira 503, junto com timeout e falha de conexão.
+
+  Para usar a API de verdade, você só precisa colocar a sua OPENWEATHER_API_KEY
+  no .env. A seção 8 do documento tem os comandos para rodar e exemplos de curl.
+
+✻ Baked for 5m 5s · done sábado, 16:46
+※ recap: Você vai implementar à mão a API de tempo da tarefa-parte1.md, e o implementacao.md já está pronto com todo o código validado: 34 testes passando. O próximo passo é seguir o documento a partir da seção 0 e colocar sua OPENWEATHER_API_KEY no .env. (disable recaps in /config)
+
+❯ Esse teste tests/Feature/MunicipioServiceTest.php deu um falso positivo, pois 
+  a rota está com problema no repository referente ao namespace do model de     
+  Municipio, porem o teste passou.                                              
+
+● Vou olhar o que você implementou no projeto para entender por que o teste
+  passou.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Você reorganizou o código em subpastas, então vou ver a estrutura atual:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Achei a causa. Vou confirmar rodando o teste e chamando a rota de verdade:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● O teste passou porque ele nunca executa o código real do repository. Ele cria
+  um mock do MunicipioRepository com o Mockery, e o mock substitui o método
+  buscarPorNome() inteiro. O PHP só tenta carregar a classe Municipio, importada
+  pelo use, quando a linha Municipio::query() roda de fato, e essa linha nunca
+  roda dentro do mock. Por isso o import quebrado fica invisível para esse
+  teste.
+
+  Isso não é bem um falso positivo: é o limite de um teste unitário. Ele valida
+  só a lógica do service (normalizar o termo e passar o limite de 10). Ele
+  continua namespace Tests\Unit e estende o TestCase puro do PHPUnit, mesmo que
+  você tenha movido o arquivo para tests/Feature. Quem pegaria o erro é o
+  tests/Feature/MunicipioApiTest.php do implementacao.md, que chama GET 
+  /api/municipios de verdade, com banco. Esse arquivo não existe no seu projeto.
+
+  Confirmei o erro chamando o service de verdade: Class 
+  "App\Models\Municipio\Municipio" not found.
+
+  O que corrigir no fluxo de municípios:
+
+  1. Namespace do model. O app/Models/Municipio/Municipio.php declara namespace 
+     App\Municipio\Models;. Pelo PSR-4 e pela pasta onde o arquivo está, deveria
+     ser namespace App\Models\Municipio;. O use do repository já está certo.
+  2. Bug no ->get() do repository. ->get('id', 'nome', 'uf') só seleciona id,
+     porque o get() espera um array e ignora os outros argumentos. O
+     autocomplete voltaria nome e uf nulos. O correto é ->get(['id', 'nome', 
+     'uf']). O teste com mock também não pegaria isso.
+  3. Criar o tests/Feature/MunicipioApiTest.php (seção 7 do implementacao.md).
+     Ele cobre os dois problemas acima: o assertJsonFragment(['nome' => 'São 
+     Paulo', 'uf' => 'SP']) falha nos dois casos.
+  4. Opcional: voltar o MunicipioServiceTest para tests/Unit, que é onde ele faz
+     sentido pelo que testa.
+
+  O fluxo de clima também está quebrado hoje. Rodei php artisan test: são 29
+  testes, 26 com erro. Parece ser a mesma reorganização em subpastas, ainda pela
+  metade. São problemas do mesmo tipo:
+  - ClimaService está em app/Services/Clima/, mas declara namespace 
+    App\Services;.
+  - ConsultaClima está em app/Models/ConsultaClima/, mas declara namespace 
+    App\Models;.
+  - WeatherProviderInterface está em app/Interfaces/, mas declara namespace 
+    App\Providers\Weather;.
+  - O ClimaController não tem use App\Http\Controllers\Controller; e importa as
+    Requests sem o \Clima.
+  - O AppServiceProvider ainda não tem o bind da interface.
+  - O ClimaServiceTest importa as classes pelos caminhos antigos.
+
+  Para achar esse tipo de problema sem rodar testes, composer dump-autoload -o
+  avisa sobre toda classe cujo namespace não bate com a pasta.
+
+  Não alterei nada no seu código, já que você está implementando manualmente.
+
+✻ Cooked for 38s · done domingo, 17:03
+
+❯ Crie o teste de integração end to end de feature do Municipio                 
+
+● Vou conferir o estado atual dos arquivos de município antes de escrever o
+  teste, para usar os namespaces certos.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Vou escrever um teste ponta a ponta real: popular o banco com o seeder usando
+  cidades.json e chamar a rota HTTP, cobrindo seeder, model, repository, service
+  e resource. Antes vou checar alguns dados reais para montar as asserções.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Write(tests/Feature/MunicipioApiTest.php)
+  ⎿  Wrote 169 lines to tests/Feature/MunicipioApiTest.php
+       1 <?php
+       2 
+       3 namespace Tests\Feature;
+       4 
+       5 use Database\Seeders\Municipio\MunicipioSeeder;
+       6 use Illuminate\Foundation\Testing\RefreshDatabase;
+       7 use Illuminate\Support\Str;
+       8 use Illuminate\Testing\TestResponse;
+       9 use PHPUnit\Framework\Attributes\DataProvider;
+      10 use PHPUnit\Framework\Attributes\Test;
+     … +181 lines (ctrl+o to expand)
+
+● Agora vou rodar o teste em dois lugares: na cópia de referência, com a
+  implementação correta, onde ele precisa passar, e no seu projeto, onde ele
+  precisa falhar pelos motivos certos.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O scratchpad foi limpo, então vou recriar a cópia de referência aplicando as
+  três correções de município. Antes, vou ver o erro fatal no seu projeto:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Confirmei que o erro fatal vem do arquivo do model, que declara a classe sem
+  namespace, causando um "Cannot declare class Municipio" ao ser incluído duas
+  vezes pelo autoloader. Vou corrigir a referência agora.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Com as três correções aplicadas, a maior parte passa. Mas a busca está
+  devolvendo no máximo 5 resultados, e não 10. Vou checar o service:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● O limite foi mudado para 5 no seu service (LIMITE_RESULTADOS = 5). Vou fazer o
+  teste depender da constante, em vez de fixar 10, para não quebrar quando você
+  ajustar o limite:
+
+● Bash(python3 - <<'EOF'
+      p='tests/Feature/MunicipioApiTest.php'; s=open(p).read()…)
+  ⎿  98:            ->assertJsonCount(min(7, MunicipioService::LIMITE_RESUL
+     TADOS), 'data')
+     99:            ->assertJsonPath('data.0.nome', 'São José dos Ausentes'
+     … +21 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /home/tiago/weatherapp-loopv2
+  ⎿  Updated tests/Feature/MunicipioApiTest.php (+13 -8)
+      2  
+      3  namespace Tests\Feature;
+      4  
+      5 +use App\Services\Municipio\MunicipioService;                    
+      6  use Database\Seeders\Municipio\MunicipioSeeder;
+      7  use Illuminate\Foundation\Testing\RefreshDatabase;
+      8  use Illuminate\Support\Str;
+     ...
+       95      {
+       96          $this->buscar($termo)
+       97              ->assertOk()
+       97 -            ->assertJsonCount(7, 'data')                      
+       98 -            ->assertJsonFragment(['nome' => 'São José dos Camp
+          -os', 'uf' => 'SP']);                                          
+       98 +            ->assertJsonCount(min(7, MunicipioService::LIMITE_
+          +RESULTADOS), 'data')                                          
+       99 +            ->assertJsonPath('data.0.nome', 'São José dos Ause
+          +ntes')                                                        
+      100 +            ->assertJsonPath('data.0.uf', 'RS');              
+      101      }
+      102  
+      103      #[Test]
+     ...
+      122              $nomes,
+      123          );
+      124  
+      123 -        $this->assertSame(                                    
+      124 -            [true, true, true, true, true, true, true, true, f
+          -alse, false],                                                 
+      125 -            $comecaComOTermo,                                 
+      125 +        $esperado = array_slice(                              
+      126 +            [...array_fill(0, 8, true), ...array_fill(0, 64, f
+          +alse)],                                                       
+      127 +            0,                                                
+      128 +            MunicipioService::LIMITE_RESULTADOS,              
+      129          );
+      127 -        $this->assertNotContains('Coronel José Dias', array_sl
+          -ice($nomes, 0, 8));                                           
+      130 +                                                              
+      131 +        $this->assertSame($esperado, $comecaComOTermo);       
+      132 +        $this->assertNotSame('Coronel José Dias', $nomes[0]); 
+      133      }
+      134  
+      135      #[Test]
+      131 -    public function limita_a_dez_resultados(): void           
+      136 +    public function limita_a_quantidade_de_resultados(): void 
+      137      {
+      138          $this->buscar('santa')
+     … 6 more lines (ctrl+o to expand)
+
+● Na referência corrigida, os 14 testes passam com limite 5 e também com limite
+  10. Agora vou confirmar que o teste pega cada um dos três bugs isoladamente,
+  reintroduzindo um por vez:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Criei o tests/Feature/MunicipioApiTest.php, com 14 testes ponta a ponta. Eles
+  passam contra uma implementação correta e falham no seu projeto como está
+  agora, por causa dos bugs que já existem. Seus arquivos de código não foram
+  alterados.
+
+  Como o teste funciona: antes de cada teste, ele roda o MunicipioSeeder real
+  com o cidades.json real e depois chama GET /api/municipios por HTTP. Assim, o
+  seeder, o model, o repository, o service, o resource e a validação participam
+  de verdade, sem nenhum mock. Os casos cobertos:
+  - O seeder importa as 5.595 cidades com nome_normalizado sem acento e pode
+    rodar duas vezes sem duplicar.
+  - A resposta traz id, nome e uf preenchidos. "Campinas" retorna 3 cidades, com
+    Campinas-SP em primeiro.
+  - A busca ignora acentos, maiúsculas e espaços: sao jose dos, são josé dos,
+    SÃO JOSÉ DOS e  Sao Jose dos  dão o mesmo resultado.
+  - Todo resultado contém o termo buscado.
+  - Os nomes que começam com o termo vêm primeiro: em "jose", "Joselândia"
+    aparece antes de "Coronel José Dias".
+  - O número de resultados respeita o limite.
+  - Uma busca sem correspondência retorna {"data": []}.
+  - Uma busca ausente, com 1 caractere ou com mais de 100 caracteres
+    retorna 422.
+
+  Seu MunicipioService está com LIMITE_RESULTADOS = 5, e não 10 como no
+  implementacao.md. Por isso as asserções de quantidade usam a própria
+  constante. Testei com limite 5 e com limite 10, e os dois passam.
+
+  Prova de que ele pega os bugs: numa cópia do projeto com os três bugs de
+  município corrigidos, os 14 testes passam. Depois, reintroduzi cada bug
+  sozinho:
+
+  ┌───────────────────────────────────────────┬─────────────────────────────┐
+  │             Bug reintroduzido             │          Resultado          │
+  ├───────────────────────────────────────────┼─────────────────────────────┤
+  │ Namespace errado no model                 │ A suíte aborta com erro     │
+  │                                           │ fatal                       │
+  ├───────────────────────────────────────────┼─────────────────────────────┤
+  │ ->get('id', 'nome', 'uf') sem array       │ 7 de 14 falham              │
+  ├───────────────────────────────────────────┼─────────────────────────────┤
+  │ Seeder com mb_strtolower sem remover      │ 8 de 14 falham              │
+  │ acento                                    │                             │
+  └───────────────────────────────────────────┴─────────────────────────────┘
+
+  O terceiro bug é novo: o seu MunicipioSeeder grava "são paulo" com acento, e a
+  busca por "sao" nunca encontra nada. O MunicipioServiceTest, que usa mock,
+  também não pegaria esse.
+
+  No seu projeto hoje, a suíte para com Fatal error: Premature end of PHP 
+  process em vez de mostrar falhas comuns. A causa é o model:
+  - O arquivo app/Models/Municipio/Municipio.php declara namespace 
+    App\Municipio\Models;.
+  - Na primeira requisição, o autoloader inclui o arquivo e a classe esperada
+    não aparece.
+  - Na segunda, ele inclui o arquivo de novo e o PHP morre com "Cannot declare
+    class".
+
+  Para o teste ficar verde, faça três correções:
+  1. No model, troque o namespace para namespace App\Models\Municipio;.
+  2. No repository, troque para ->get(['id', 'nome', 'uf']).
+  3. No seeder, troque para 'nome_normalizado' => 
+     Str::lower(Str::ascii($cidade)), com use Illuminate\Support\Str;.
+
+  Depois, rode php artisan test --filter=MunicipioApiTest.
+
+✻ Churned for 1m 55s · done domingo, 17:06
+
+❯ ocorreu o erro ao rodar Fatal error: Premature end of PHP process when        
+  running                                                                       
+  Tests\Feature\MunicipioApiTest::busca_ignora_acentos_maiusculas_e_espacos@sem 
+  acento, minúsculo with data ('sao jose dos').                                 
+
+● Vou ver o estado atual dos arquivos para entender por que o erro continua.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Nenhuma das três correções está aplicada ainda, então esse erro é o esperado.
+  Vou extrair a mensagem real que fica escondida atrás do "Premature end":
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Esse erro é o que o teste deve mostrar no estado atual do código: nenhuma das
+  três correções foi aplicada ainda. O teste não está com defeito. A causa
+  direta é o namespace do model, e reproduzi a mensagem real que o PHPUnit
+  esconde atrás do "Premature end":
+
+  PHP Fatal error: Cannot declare class App\Municipio\Models\Municipio, because 
+  the name
+  is already in use in app/Models/Municipio/Municipio.php on line 7
+
+  O que acontece:
+  1. O repository pede App\Models\Municipio\Municipio, e o autoloader do
+     Composer inclui o arquivo app/Models/Municipio/Municipio.php.
+  2. Esse arquivo declara uma classe com outro nome,
+     App\Municipio\Models\Municipio. A classe pedida continua sem existir, e a
+     primeira requisição volta com 500.
+  3. Na requisição seguinte, o autoloader inclui o mesmo arquivo de novo. O PHP
+     tenta declarar App\Municipio\Models\Municipio uma segunda vez e encerra o
+     processo inteiro com erro fatal. Um erro fatal derruba o processo do
+     PHPUnit, e não só o teste, por isso aparece "Premature end" em vez de uma
+     falha normal.
+
+  Ele estoura em busca_ignora_acentos... só porque esse é o primeiro teste a
+  fazer a segunda requisição dentro do mesmo processo.
+
+  Correções (os arquivos continuam como antes):
+
+  1. app/Models/Municipio/Municipio.php, linha 3. Esta resolve o erro fatal:
+  namespace App\Models\Municipio;
+  2. app/Repositories/Municipio/MunicipioRepository.php, linha 17. Sem ela, 7
+     testes falham com nome e uf nulos:
+  ->get(['id', 'nome', 'uf']);
+  3. database/seeders/Municipio/MunicipioSeeder.php, linha 32, mais o import use
+     Illuminate\Support\Str; no topo. Sem ela, as buscas sem acento não
+     encontram nada:
+  'nome_normalizado' => Str::lower(Str::ascii($cidade)),
+
+  Depois de aplicar as três, rode:
+
+  composer dump-autoload
+  php artisan migrate:fresh --seed
+  php artisan test --filter=MunicipioApiTest
+
+  O migrate:fresh --seed regrava o banco local com os nomes normalizados
+  corretamente. Os testes não dependem dele, porque usam um banco em memória.
+  Numa cópia do projeto com essas três correções, os 14 testes passaram.
+
+✻ Sautéed for 19s · done domingo, 17:09
+
+❯ pode executar esses passos                                                    
+  Read 3 files (ctrl+o to expand)
+
+● Update(app/Models/Municipio/Municipio.php)
+  ⎿  Added 1 line, removed 1 line
+      1  <?php
+      2  
+      3 -namespace App\Municipio\Models;                                 
+      3 +namespace App\Models\Municipio;                                 
+      4  
+      5  use Illuminate\Database\Eloquent\Model;
+      6  
+
+● Update(app/Repositories/Municipio/MunicipioRepository.php)
+  ⎿  Added 1 line, removed 1 line
+      14              ->orderByRAW('CASE WHEN nome_normalizado LIKE ? THE
+          N 0 ELSE 1 END', ["$termoNormalizado%"])
+      15              ->orderBy('nome')
+      16              ->limit($limite)
+      17 -            ->get('id', 'nome', 'uf');                         
+      17 +            ->get(['id', 'nome', 'uf']);                       
+      18      }
+      19  }
+      20   No newline at end of file
+
+● Update(database/seeders/Municipio/MunicipioSeeder.php)
+  ⎿  Added 1 line
+       5  use Illuminate\Database\Console\Seeds\WithoutModelEvents;
+       6  use Illuminate\Database\Seeder;
+       7  use Illuminate\Support\Facades\DB;
+       8 +use Illuminate\Support\Str;                                    
+       9  use RuntimeException;
+      10  
+      11  class MunicipioSeeder extends Seeder
+
+● Update(database/seeders/Municipio/MunicipioSeeder.php)
+  ⎿  Added 1 line, removed 1 line
+      30              foreach ($estado['cidades'] as $cidade) {
+      31                  $registros[] = [
+      32                      'nome' => $cidade,
+      33 -                    'nome_normalizado' => mb_strtolower($cidade
+         -),                                                             
+      33 +                    'nome_normalizado' => Str::lower(Str::ascii
+         +($cidade)),                                                    
+      34                      'uf' => $estado['sigla'],
+      35                      'created_at' => $agora,
+      36                      'updated_at' => $agora,
+
+● As três correções estão aplicadas. Agora vou rodar os comandos:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os 14 testes passaram. Vou conferir a rota contra o banco local recém-populado
+  e rodar os outros testes de município:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Apliquei as três correções e rodei os passos, e o fluxo de municípios está
+  funcionando: os 14 testes do MunicipioApiTest passam.
+
+  O que mudei:
+  - app/Models/Municipio/Municipio.php: o namespace agora é
+    App\Models\Municipio. Isso acaba com o erro fatal.
+  - app/Repositories/Municipio/MunicipioRepository.php: troquei para
+    ->get(['id', 'nome', 'uf']).
+  - database/seeders/Municipio/MunicipioSeeder.php: troquei para
+    Str::lower(Str::ascii($cidade)) e adicionei o use Illuminate\Support\Str;.
+
+  Resultado dos comandos:
+  - composer dump-autoload rodou sem erros.
+  - php artisan migrate:fresh --seed recriou as tabelas do banco local, então os
+    dados que estavam nele foram apagados, e importou os 5.595 municípios.
+  - O MunicipioServiceTest (unitário) também passa.
+  - Chamei o service direto contra o banco local: a busca sao jose dos retorna
+    São José dos Ausentes, Basílios, Campos, Cordeiros e Pinhais, com nome e uf
+    preenchidos e no máximo 5, que é o seu limite atual.
+
+  Ainda quebrado: a suíte completa tem 26 erros, todos no fluxo de clima
+  (ClimaApiTest e ClimaServiceTest). É o mesmo problema de namespace que não
+  bate com a pasta, da reorganização em subpastas, como listei antes. Esses
+  arquivos eu não alterei.
+
+✻ Worked for 30s · done domingo, 17:11
+
+※ recap: Você está implementando a API de tempo a partir do implementacao.md, e o fluxo de municípios já funciona, com os 14 testes de integração passando. O próximo passo é ajustar os namespaces do fluxo de clima, que ainda tem 26 testes com erro. (disable recaps in /config)
+
+❯ Corrija todos os problemas referente a namespace que não esteja com o         
+  namespace da pasta correta                                                    
+
+● Vou listar todas as classes cujo namespace não bate com a pasta. O Composer
+  avisa sobre isso no autoload otimizado:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Encontrei 3 classes com namespace divergente da pasta. Agora vou verificar
+  todos os use do projeto para ajustar também os imports que apontam para
+  namespaces antigos ou inexistentes.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O script engoliu as barras invertidas, então vou refazer a checagem com PHP:
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Tenho o mapa completo. Vou corrigir de modo que o namespace siga a pasta onde
+  o arquivo está, e atualizar todos os imports que apontam para essas classes.
+
+● Bash(python3 - <<'EOF'
+      import re…)
+  ⎿  Nenhuma violação PSR-4
+     app/Services/Clima/ClimaService.php:6  App\Repositories\Clima\Consulta
+     ClimaRepository
+     … +2 lines (ctrl+o to expand)
+  ⎿  Updated app/Interfaces/WeatherProviderInterface.php (+1 -1)
+      1  <?php
+      2  
+      3 -namespace App\Providers\Weather;                                
+      3 +namespace App\Interfaces;                                       
+      4  
+      5  use App\DTOs\DadosClima;
+      6  use App\Exceptions\ClimaException;
+  ⎿  Updated app/Providers/Weather/OpenWeatherProvider.php (+1 -0)
+       6  use App\Exceptions\CidadeNaoEncontradaException;
+       7  use App\Exceptions\FalhaApiClimaException;
+       8  use App\Exceptions\ServicoClimaIndisponivelException;
+       9 +use App\Interfaces\WeatherProviderInterface;                   
+      10  use Illuminate\Http\Client\ConnectionException;
+      11  use Illuminate\Http\Client\Response;
+      12  use Illuminate\Support\Facades\Http;
+  ⎿  Updated app/Models/ConsultaClima/ConsultaClima.php (+1 -1)
+      1  <?php
+      2  
+      3 -namespace App\Models;                                           
+      3 +namespace App\Models\ConsultaClima;                             
+      4  
+      5  use Illuminate\Database\Eloquent\Model;
+      6  
+  ⎿  Updated app/DTOs/DadosClima.php (+1 -1)
+      2  
+      3  namespace App\DTOs;
+      4  
+      5 -use App\Models\ConsultaClima;                                   
+      5 +use App\Models\ConsultaClima\ConsultaClima;                     
+      6  use Illuminate\Support\Str;
+      7  
+      8  final readonly class DadosClima
+  ⎿  Updated app/Services/Clima/ResultadoRegistroClima.php (+2 -2)
+      1  <?php
+      2  
+      3 -namespace App\DTOs\Clima;                                       
+      3 +namespace App\Services\Clima;                                   
+      4  
+      5 -use App\Models\ConsultaClima;                                   
+      5 +use App\Models\ConsultaClima\ConsultaClima;                     
+      6  
+      7  final readonly class ResultadoRegistroClima
+      8  {
+  ⎿  … 4 more files changed
+
+● Nenhuma violação de PSR-4 restante — os dois imports que apontam para
+  ConsultaClimaRepository referem-se a um arquivo inexistente no projeto e no
+  histórico do git, não a um namespace errado. Agora vou procurar por
+  referências com o caminho completo sem use e rodar os testes.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A suíte saiu de 17 para 29 testes passando. Vou confirmar a causa dos 500 que
+  restam:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Corrigi todos os namespaces que não batiam com a pasta. O composer 
+  dump-autoload -o não aponta mais nenhuma violação de PSR-4, e a suíte passou
+  de 17 para 29 testes verdes, de 43. Os 14 que ainda falham são do fluxo de
+  clima e não têm relação com namespace: falta código que nunca foi escrito
+  (detalhes no fim).
+
+  Declarações corrigidas (o namespace agora segue a pasta):
+
+  ┌───────────────────────────────────┬─────────────────┬───────────────────┐
+  │              Arquivo              │      Antes      │      Depois       │
+  ├───────────────────────────────────┼─────────────────┼───────────────────┤
+  │ app/Interfaces/WeatherProviderInt │ App\Providers\W │ App\Interfaces    │
+  │ erface.php                        │ eather          │                   │
+  ├───────────────────────────────────┼─────────────────┼───────────────────┤
+  │ app/Models/ConsultaClima/Consulta │ App\Models      │ App\Models\Consul │
+  │ Clima.php                         │                 │ taClima           │
+  ├───────────────────────────────────┼─────────────────┼───────────────────┤
+  │ app/Services/Clima/ResultadoRegis │ App\DTOs\Clima  │ App\Services\Clim │
+  │ troClima.php                      │                 │ a                 │
+  └───────────────────────────────────┴─────────────────┴───────────────────┘
+
+  Imports atualizados para os caminhos novos:
+  - OpenWeatherProvider: ganhou o use App\Interfaces\WeatherProviderInterface;.
+    Antes ele não precisava, porque a interface estava no mesmo namespace.
+  - ClimaService: removi os dois imports quebrados de
+    App\DTOs\ResultadoRegistro\.... O ResultadoRegistroClima agora está no mesmo
+    namespace do service. O import da interface também foi atualizado.
+  - ClimaController: App\Http\Requests\Clima\HistoricoClimaRequest.
+  - DadosClima, ResultadoRegistroClima, ClimaApiTest e ClimaServiceTest:
+    App\Models\ConsultaClima\ConsultaClima.
+  - ClimaServiceTest: App\Interfaces\..., App\Services\Clima\ClimaService e
+    App\Repositories\Clima\ConsultaClimaRepository, este último alinhado com o
+    que o service espera.
+
+  Mantive literalmente "namespace = pasta". Por isso o ResultadoRegistroClima
+  ficou em App\Services\Clima, já que o arquivo está nessa pasta. Se você
+  preferir que ele fique junto do DadosClima, o certo é mover o arquivo para
+  app/DTOs/ e usar o namespace App\DTOs.
+
+  O que ainda impede o clima de funcionar (não mexi, porque não é problema de
+  namespace):
+  1. O ConsultaClimaRepository não existe. O ClimaService importa
+     App\Repositories\Clima\ConsultaClimaRepository, mas o arquivo nunca foi
+     criado. Ele não está no projeto nem no histórico do git. O código está no
+     implementacao.md, na seção 5 em "Repository"; basta salvar em
+     app/Repositories/Clima/ConsultaClimaRepository.php com namespace 
+     App\Repositories\Clima; e use App\Models\ConsultaClima\ConsultaClima;. Os
+     12 testes do ClimaServiceTest passam mesmo assim porque o Mockery cria o
+     mock de uma classe inexistente, o que é a mesma armadilha do falso positivo
+     de antes.
+  2. O AppServiceProvider não tem o bind da interface. Hoje o Laravel não
+     consegue montar o ClimaService (Target 
+     [App\Interfaces\WeatherProviderInterface] is not instantiable), e por isso
+     todos os testes de feature do clima retornam 500. Basta adicionar ao
+     register():
+  $this->app->bind(\App\Interfaces\WeatherProviderInterface::class,
+  \App\Providers\Weather\OpenWeatherProvider::class);
+
+✻ Crunched for 1m 18s · done domingo, 17:24
+
+※ recap: Você está construindo a API de clima da tarefa-parte1; acabei de corrigir os namespaces e agora 29 de 43 testes passam. Próximo passo: criar o `ConsultaClimaRepository` e registrar o `bind` da interface no `AppServiceProvider`. (disable recaps in /config)
+
+❯ Rode os testes, corrija os eventuais problemas que estão ocorrendo com a      
+  interface/namespace                                                           
+
+● Vou rodar a suíte para ver o estado atual:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Você moveu arquivos desde a última rodada: agora existem app/Models/Clima/ e
+  app/Repositories/Municipio/Clima/. Vou ver o que mudou:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Encontrei três problemas: imports antigos do model em quatro arquivos, o
+  repository criado no local errado (Municipio/Clima com namespace incorreto) e
+  o bind da interface faltando. Vou corrigir os imports, mover o repository para
+  app/Repositories/Clima/ e adicionar o bind.
+
+● Bash(mkdir -p app/Repositories/Clima && mv
+      app/Repositories/Municipio/Clima/ConsultaClimaRepository.php
+      app/Repositories/Clima/ && rmdir app/Repositories/Municipio/C…)  ⎿  PSR-4 ok
+     imports ok
+     passed 43 / 43
+  ⎿  Deleted app/Repositories/Municipio/Clima/ConsultaClimaRepository.php
+     (+0 -49)
+       1 -<?php                                                          
+       2 -                                                               
+       3 -namespace App\Repositories;                                    
+       4 -                                                               
+       5 -use App\DTOs\DadosClima;                                       
+       6 -use App\Models\Clima\ConsultaClima;                            
+       7 -use DateTimeInterface;                                         
+       8 -use Illuminate\Support\Collection;                             
+       9 -                                                               
+      10 -class ConsultaClimaRepository                                  
+      11 -{                                                              
+      12 -    public function ultimaPorCidade(string $cidadeSlug): ?Consu
+         -ltaClima                                                       
+      13 -    {                                                          
+      14 -        return ConsultaClima::query()                          
+      15 -            ->where('cidade_slug', $cidadeSlug)                
+      16 -            ->orderByDesc('consultado_em')                     
+      17 -            ->orderByDesc('id')                                
+      18 -            ->first();                                         
+      19 -    }                                                          
+      20 -                                                               
+      21 -    public function criar(DadosClima $dados, DateTimeInterface 
+         -$consultadoEm): ConsultaClima                                  
+      22 -    {                                                          
+      23 -        return ConsultaClima::create([                         
+      24 -            'cidade' => $dados->cidade,                        
+      25 -            'cidade_slug' => $dados->cidadeSlug(),             
+      26 -            'temperatura' => $dados->temperatura,              
+      27 -            'sensacao_termica' => $dados->sensacaoTermica,     
+      28 -            'umidade' => $dados->umidade,                      
+      29 -            'descricao' => $dados->descricao,                  
+      30 -            'consultado_em' => $consultadoEm,                  
+      31 -        ]);                                                    
+      32 -    }                                                          
+      33 -                                                               
+      34 -    public function atualizarDataConsulta(ConsultaClima $consul
+         -ta, DateTimeInterface $consultadoEm): ConsultaClima            
+      35 -    {                                                          
+      36 -        $consulta->update(['consultado_em' => $consultadoEm]); 
+      37 -                                                               
+      38 -        return $consulta;                                      
+      39 -    }                                                          
+      40 -                                                               
+     … 10 more lines (ctrl+o to expand)
+  ⎿  Created app/Repositories/Clima/ConsultaClimaRepository.php (+49 -0)
+       1 +<?php                                                          
+       2 +                                                               
+       3 +namespace App\Repositories\Clima;                              
+       4 +                                                               
+       5 +use App\DTOs\DadosClima;                                       
+       6 +use App\Models\Clima\ConsultaClima;                            
+       7 +use DateTimeInterface;                                         
+       8 +use Illuminate\Support\Collection;                             
+       9 +                                                               
+      10 +class ConsultaClimaRepository                                  
+      11 +{                                                              
+      12 +    public function ultimaPorCidade(string $cidadeSlug): ?Consu
+         +ltaClima                                                       
+      13 +    {                                                          
+      14 +        return ConsultaClima::query()                          
+      15 +            ->where('cidade_slug', $cidadeSlug)                
+      16 +            ->orderByDesc('consultado_em')                     
+      17 +            ->orderByDesc('id')                                
+      18 +            ->first();                                         
+      19 +    }                                                          
+      20 +                                                               
+      21 +    public function criar(DadosClima $dados, DateTimeInterface 
+         +$consultadoEm): ConsultaClima                                  
+      22 +    {                                                          
+      23 +        return ConsultaClima::create([                         
+      24 +            'cidade' => $dados->cidade,                        
+      25 +            'cidade_slug' => $dados->cidadeSlug(),             
+      26 +            'temperatura' => $dados->temperatura,              
+      27 +            'sensacao_termica' => $dados->sensacaoTermica,     
+      28 +            'umidade' => $dados->umidade,                      
+      29 +            'descricao' => $dados->descricao,                  
+      30 +            'consultado_em' => $consultadoEm,                  
+      31 +        ]);                                                    
+      32 +    }                                                          
+      33 +                                                               
+      34 +    public function atualizarDataConsulta(ConsultaClima $consul
+         +ta, DateTimeInterface $consultadoEm): ConsultaClima            
+      35 +    {                                                          
+      36 +        $consulta->update(['consultado_em' => $consultadoEm]); 
+      37 +                                                               
+      38 +        return $consulta;                                      
+      39 +    }                                                          
+      40 +                                                               
+     … 10 more lines (ctrl+o to expand)
+  ⎿  Updated app/Services/Clima/ResultadoRegistroClima.php (+1 -1)
+      2  
+      3  namespace App\Services\Clima;
+      4  
+      5 -use App\Models\ConsultaClima\ConsultaClima;                     
+      5 +use App\Models\Clima\ConsultaClima;                             
+      6  
+      7  final readonly class ResultadoRegistroClima
+      8  {
+  ⎿  Updated app/DTOs/DadosClima.php (+1 -1)
+      2  
+      3  namespace App\DTOs;
+      4  
+      5 -use App\Models\ConsultaClima\ConsultaClima;                     
+      5 +use App\Models\Clima\ConsultaClima;                             
+      6  use Illuminate\Support\Str;
+      7  
+      8  final readonly class DadosClima
+  ⎿  Updated tests/Feature/ClimaApiTest.php (+1 -1)
+      2  
+      3  namespace Tests\Feature;
+      4  
+      5 -use App\Models\ConsultaClima\ConsultaClima;                     
+      5 +use App\Models\Clima\ConsultaClima;                             
+      6  use Illuminate\Foundation\Testing\RefreshDatabase;
+      7  use Illuminate\Support\Facades\Http;
+      8  use PHPUnit\Framework\Attributes\Test;
+  ⎿  … 2 more files changed
+
+● Os 43 testes passam. Vou confirmar que a aplicação resolve as dependências
+  fora dos testes também:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● As rotas aparecem com nomes generated::..., o que geralmente indica cache de
+  rotas ativo. Vou verificar, porque um cache antigo faria a aplicação ignorar
+  mudanças futuras em routes/api.php:
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Os 43 testes passam agora (eram 19 de 43), e a aplicação resolve as
+  dependências fora dos testes também: ClimaService com OpenWeatherProvider
+  injetado, e as três rotas da API registradas.
+
+  O que estava quebrado e o que fiz:
+  1. O repository estava na pasta errada e com o namespace errado. O
+     ConsultaClimaRepository tinha sido criado em
+     app/Repositories/Municipio/Clima/ com namespace App\Repositories;, enquanto
+     o service e os testes esperam
+     App\Repositories\Clima\ConsultaClimaRepository. Movi o arquivo para
+     app/Repositories/Clima/, ao lado de Repositories/Municipio/, e ajustei o
+     namespace. Apaguei a pasta Municipio/Clima/, que ficou vazia.
+  2. Os imports do model ainda usavam o caminho antigo. Você moveu o
+     ConsultaClima para app/Models/Clima/, mas quatro arquivos ainda importavam
+     App\Models\ConsultaClima\ConsultaClima. Atualizei todos para
+     App\Models\Clima\ConsultaClima: DadosClima, ResultadoRegistroClima,
+     ClimaApiTest e ClimaServiceTest.
+  3. Faltava o bind da interface. Adicionei ao register() do AppServiceProvider:
+  $this->app->bind(WeatherProviderInterface::class, OpenWeatherProvider::class);
+     Era isso que fazia todos os testes de feature do clima retornarem 500.
+
+  O composer dump-autoload -o não aponta nenhuma violação de PSR-4, e todo use 
+  App\... do projeto aponta para um arquivo que existe.
+
+  Encontrei um cache de rotas ativo em bootstrap/cache/routes-v7.php,
+  provavelmente de um php artisan optimize ou route:cache. Hoje ele bate com o
+  routes/api.php, mas, se você mudar as rotas depois, a aplicação vai ignorar a
+  mudança até você rodar php artisan optimize:clear. Os testes não são afetados.
+
+  Nada foi commitado.
+
+✻ Churned for 46s · done domingo, 17:33
+
+※ recap: Estamos construindo a API de clima e municípios em Laravel, e todos os 43 testes já passam depois das correções de namespace, repository e bind. O próximo passo é você revisar as mudanças e fazer o commit.
+
+❯ /plan                                                                         
+  ⎿  Current Plan
+     /home/tiago/.claude/plans/leia-o-arquivo-tarefa-parte1-md-abundant-clarke.m
+     d
+
+     Plano: API de Tempo (tarefa-parte1.md)
+
+     Contexto
+
+     O tarefa-parte1.md pede uma API Laravel com três rotas:
+     - autocomplete de municípios, a partir do cidades.json;
+     - registro do clima de uma cidade, via OpenWeatherMap;
+     - histórico das consultas, com cache.
+
+     O banco é SQLite, e a regra anti-duplicidade e os testes são obrigatórios.
+     O usuário vai implementar manualmente, então o entregável é um único 
+     arquivo implementacao.md na raiz do projeto. Ele traz o código de cada
+     arquivo com uma breve descrição acima de cada um. Nenhum arquivo da
+     aplicação será criado ou alterado por mim.
+
+     Estado atual: Laravel 13, PHP 8.3, DB_CONNECTION=sqlite,
+     CACHE_STORE=database (nos testes, array). Ainda não existe routes/api.php.
+     O bootstrap/app.php já renderiza JSON para api/*. O cidades.json tem o
+     formato
+     {"estados":[{"sigla":"AC","nome":"Acre","cidades":["Acrelândia",...]}]}.
+
+     Decisões confirmadas com o usuário
+
+     - Duplicidade: a nova consulta é comparada com a última consulta da mesma 
+       cidade. Se temperatura, sensação, umidade e descrição forem iguais, só o
+       consultado_em é atualizado. Se algum valor mudar, um novo registro é
+       criado.
+     - Histórico: GET /api/clima/historico?cidade=X, com o filtro de cidade
+       opcional e ordem do mais recente para o mais antigo. O cache tem TTL e é
+       invalidado a cada criação ou atualização.
+     - POST: POST /api/clima?cidade=Campinas, só com o nome da cidade e sem
+       validar na tabela de municípios. A OpenWeather recebe q=Campinas,BR.
+
+     Decisões de design (minhas)
+
+     - O nome salvo é o que a OpenWeather devolve (name), para padronizar a
+       grafia. Além dele, guardo cidade_slug (Str::slug), que serve para três
+       coisas: achar a última consulta, filtrar o histórico e montar a chave de
+       cache. Assim, "sao paulo" e "São Paulo" são tratados como a mesma cidade.
+     - A tabela de municípios ganha a coluna nome_normalizado (minúsculo e sem
+       acento). Sem ela, o LIKE do SQLite não acharia "São" ao buscar "sao".
+     - O provider fica atrás de uma interface (WeatherProviderInterface),
+       registrada no AppServiceProvider. Isso facilita o mock e uma eventual
+       troca de API.
+     - Cache: chaves clima:historico:todas e clima:historico:{slug}, com TTL de
+       10 min. Depois de gravar, o Service faz forget nas duas.
+     - Os erros usam exceções próprias com render() em JSON, no formato {"erro":
+       "mensagem"}:
+       - cidade não encontrada: 404;
+       - chave da API inválida ou erro 5xx da OpenWeather: 502;
+       - timeout ou falha de conexão: 503;
+       - validação: 422, com a mensagem em português no FormRequest.
+     - O POST responde 201 quando cria um registro e 200 quando só atualiza a
+       data. O corpo inclui o campo atualizado: true|false.
+     - A rota de autocomplete exige pelo menos 2 caracteres e devolve no máximo
+       10 resultados.
+
+     Estrutura que irá no implementacao.md (em ordem de implementação)
+
+     0. Setup: .env/.env.example (OPENWEATHER_API_KEY, OPENWEATHER_BASE_URL,
+        OPENWEATHER_TIMEOUT), config/services.php (bloco openweather) e
+        bootstrap/app.php (adicionar api: __DIR__.'/../routes/api.php' ao
+        withRouting).
+     1. Migrations: create_municipios_table (nome, nome_normalizado indexado, uf
+        char(2)) e create_consulta_clima_table (cidade, cidade_slug,
+        temperatura decimal(5,2), sensacao_termica decimal(5,2), umidade
+        unsignedTinyInt, descricao, consultado_em datetime, timestamps, índice
+        em (cidade_slug, consultado_em)).
+     2. Models: app/Models/Municipio.php e app/Models/ConsultaClima.php ($table 
+        = 'consulta_clima', casts).
+     3. Seeder: database/seeders/MunicipioSeeder.php. Ele lê
+        base_path('cidades.json'), percorre os estados e cidades, monta
+        nome_normalizado com Str::lower(Str::ascii()) e insere em lotes de 500
+        (truncate antes, para ser idempotente). O DatabaseSeeder passa a chamar
+        esse seeder.
+     4. Municípios (padrão Service/Repository):
+        Repositories/MunicipioRepository::buscarPorNome(),
+        Services/MunicipioService::autocomplete(),
+        Http/Requests/BuscarMunicipioRequest,
+        Http/Controllers/MunicipioController e Http/Resources/MunicipioResource.
+     5. Clima:
+        - DTOs/DadosClima (readonly, com igualA(ConsultaClima) comparando os
+          valores arredondados);
+        - Providers/Weather/WeatherProviderInterface e OpenWeatherProvider, que
+          usa Http::timeout()->get(.../weather, q, appid, units=metric, 
+          lang=pt_br) e mapeia 404, 401 e 5xx, além da ConnectionException;
+        - Repositories/ConsultaClimaRepository (ultimaPorCidade, criar,
+          atualizarDataConsulta, historico(?slug));
+        - Services/ClimaService (registrarConsulta(cidade) retorna o resultado
+          com a flag de criado ou atualizado; historico(?cidade) usa
+          Cache::remember);
+        - Http/Requests/RegistrarClimaRequest, Http/Controllers/ClimaController
+          e Http/Resources/ConsultaClimaResource.
+     6. Exceções: Exceptions/CidadeNaoEncontradaException,
+        Exceptions/ServicoClimaIndisponivelException e
+        Exceptions/FalhaApiClimaException, todas com render() em JSON.
+     7. Rotas: routes/api.php com GET /municipios?busca=, POST /clima?cidade= e
+        GET /clima/historico?cidade=. Registro do binding da interface no
+        AppServiceProvider.
+     8. Testes:
+        - tests/Unit/ClimaServiceTest.php, com Mockery no provider e no
+          repository. Casos cobertos:
+          - cria o registro quando não há consulta anterior;
+          - só atualiza a data quando os valores são iguais;
+          - cria um novo registro quando a temperatura muda;
+          - cria um novo registro quando só a umidade ou a descrição mudam;
+          - invalida o cache após gravar;
+          - no histórico, a segunda chamada não consulta o repository (o cache
+            funciona);
+          - o filtro por cidade usa uma chave própria;
+          - uma exceção do provider não grava nada.
+        - tests/Unit/MunicipioServiceTest.php.
+        - tests/Feature/ClimaApiTest.php, com Http::fake e
+          Http::preventStrayRequests. Casos cobertos:
+          - 201 ao criar;
+          - repetição idêntica retorna 200, mantém só 1 registro e atualiza
+            consultado_em (via travelTo);
+          - mudança de temperatura gera 2 registros;
+          - sem cidade retorna 422;
+          - cidade inexistente retorna 404;
+          - erro 500 da OpenWeather retorna 502;
+          - timeout retorna 503;
+          - histórico com e sem filtro;
+          - o histórico reflete um novo POST (invalidação do cache).
+        - tests/Feature/MunicipioApiTest.php: busca sem acento, limite de 10
+          resultados, termo curto retorna 422 e o seeder popula a tabela a
+          partir do JSON.
+     9. Como rodar: php artisan migrate --seed, php artisan test e exemplos de
+        curl.
+
+     Arquivo crítico
+
+     - Criar: /home/tiago/weatherapp-loopv2/implementacao.md (o único arquivo
+       que vou escrever).
+     - Referenciados no conteúdo (o usuário altera): bootstrap/app.php,
+       config/services.php, app/Providers/AppServiceProvider.php,
+       database/seeders/DatabaseSeeder.php e .env.
+
+     Observação
+
+     O CLAUDE.md do projeto sugere instalar o Laravel Boost antes de alterar a
+     aplicação. Como não vou alterar a aplicação, isso fica fora do escopo. Vou
+     mencionar no .md como passo opcional.
+
+     Verificação
+
+     - Revisar o implementacao.md para garantir que todos os namespaces, imports
+       e assinaturas batem entre os arquivos: Controller → Service →
+       Provider/Repository.
+     - Depois que o usuário implementar, rodar php artisan migrate:fresh --seed
+       (são cerca de 5.570 municípios), php artisan test (Unit + Feature, todos
+       verdes) e testar manualmente com curl -X POST 
+       "localhost:8000/api/clima?cidade=Campinas" duas vezes seguidas. Na
+       segunda chamada, a resposta deve ser 200 com atualizado: true.
+
+     "/plan open" to edit this plan in VS Code
+
+❯ Olhe o arquivo DESIGN.md e a telas:                                           
+  <!DOCTYPE html><html lang="pt-BR" style="" data-lt-installed="true"><svg      
+  class="inline-defs-container" aria-hidden="true"                              
+  style="position:absolute;width:0;height:0;overflow:hidden"></svg><head>       
+  <meta charset="utf-8">                                                        
+  <meta content="width=device-width, initial-scale=1.0" name="viewport">        
+  <title>WeatherApp — Consulta meteorológica</title>                            
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;7 
+  00&amp;family=Plus+Jakarta+Sans:wght@600;700&amp;display=swap"                
+  rel="stylesheet">                                                             
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outline 
+  d:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">                 
+  <style>                                                                       
+      @layer base {                                                             
+        html, body {                                                            
+          margin: 0;                                                            
+          padding: 0;                                                           
+        }                                                                       
+        body {                                                                  
+          overscroll-behavior: none;                                            
+        }                                                                       
+      }                                                                         
+    </style>                                                                    
+  <script                                                                       
+  src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>   
+  <script id="tailwind-config">                                                 
+      tailwind.config = {                                                       
+        darkMode: "class",                                                      
+        theme: {                                                                
+          extend: {                                                             
+            colors: {                                                           
+              "primary": "#007BB3",                                             
+              "primary-dark": "#005B80",                                        
+              "brand-deep": "#003E53",                                          
+              "brand-accent": "#00A1DA",                                        
+              "surface-subtle": "#F1F5F9",                                      
+              "surface-canvas": "#F8FAFC",                                      
+              "border-subtle": "#CBD5E1",                                       
+              "border-strong": "#94A3B8",                                       
+              "text-muted": "#64748B",                                          
+              "on-surface": "#111C2D",                                          
+              "on-surface-variant": "#334155"                                   
+            },                                                                  
+            fontFamily: {                                                       
+              sans: ["Inter", "sans-serif"],                                    
+              display: ["Plus Jakarta Sans", "sans-serif"]                      
+            }                                                                   
+          }                                                                     
+        }                                                                       
+      };                                                                        
+    </script>                                                                   
+  </head>                                                                       
+  <body class="bg-[#F3F4F6] text-on-surface font-sans min-h-screen flex         
+  flex-col items-center">                                                       
+  <!-- Header limpo e minimalista com logotipo SVG da Loop Sistemas             
+  centralizado -->                                                              
+  <header class="w-full bg-white border-b border-border-subtle py-4 shadow-sm   
+  flex flex-col items-center justify-center">                                   
+  <div class="flex flex-col items-center gap-1.5">                              
+  <div class="h-10 w-auto flex items-center justify-center">                    
+  <!-- SVG Logotipo Loop Sistemas (DOCUMENT_5) -->                              
+  <svg class="h-10 w-auto" style="enable-background:new 0 0 695.8 347.3;"       
+  viewBox="0 0 695.8 347.3" xml:space="preserve"                                
+  xmlns="http://www.w3.org/2000/svg">                                           
+  <style type="text/css">                                                       
+              .st0{fill:#00A1DA;}                                               
+              .st1{fill:#007BB3;}                                               
+              .st2{fill:#005B80;}                                               
+              .st3{fill:#003E53;}                                               
+              .st4{fill:#656261;}                                               
+              .st5{fill-rule:even                                               
+  ──── (671 lines hidden) ───────────────────────────────────────────────────── 
+  td class="py-2 px-3 font-mono text-brand-600">rainy_heavy</td>                
+                <td class="py-2 px-3"><span class="material-symbols-outlined    
+  filled text-brand-700 text-lg">rainy_heavy</span></td>                        
+                <td class="py-2 px-3"><code class="text-brand-700               
+  font-mono">#005b80</code></td>                                                
+                <td class="py-2 px-3"><code class="text-slate-600               
+  font-mono">bg-blue-100</code></td>                                            
+              </tr>                                                             
+              <tr class="hover:bg-slate-50/60">                                 
+                <td class="py-2 px-3 font-mono font-semibold                    
+  text-slate-800">Thunderstorm</td>                                             
+                <td class="py-2 px-3 font-mono                                  
+  text-brand-600">thunderstorm</td>                                             
+                <td class="py-2 px-3"><span class="material-symbols-outlined    
+  filled text-indigo-600 text-lg">thunderstorm</span></td>                      
+                <td class="py-2 px-3"><code class="text-indigo-600              
+  font-mono">#4f46e5</code></td>                                                
+                <td class="py-2 px-3"><code class="text-slate-600               
+  font-mono">bg-indigo-50</code></td>                                           
+              </tr>                                                             
+              <tr class="hover:bg-slate-50/60">                                 
+                <td class="py-2 px-3 font-mono font-semibold                    
+  text-slate-800">Fog / Mist</td>                                               
+                <td class="py-2 px-3 font-mono text-brand-600">foggy</td>       
+                <td class="py-2 px-3"><span class="material-symbols-outlined    
+  text-slate-600 text-lg">foggy</span></td>                                     
+                <td class="py-2 px-3"><code class="text-slate-600               
+  font-mono">#64748b</code></td>                                                
+                <td class="py-2 px-3"><code class="text-slate-600               
+  font-mono">bg-slate-100</code></td>                                           
+              </tr>                                                             
+              <tr class="hover:bg-slate-50/60">                                 
+                <td class="py-2 px-3 font-mono font-semibold                    
+  text-slate-800">Windy / Gale</td>                                             
+                <td class="py-2 px-3 font-mono text-brand-600">air</td>         
+                <td class="py-2 px-3"><span class="material-symbols-outlined    
+  text-teal-600 text-lg">air</span></td>                                        
+                <td class="py-2 px-3"><code class="text-teal-600                
+  font-mono">#0d9488</code></td>                                                
+                <td class="py-2 px-3"><code class="text-slate-600               
+  font-mono">bg-teal-50</code></td>                                             
+              </tr>                                                             
+            </tbody>                                                            
+          </table>                                                              
+        </div>                                                                  
+      </section>                                                                
+                                                                                
+    </div>                                                                      
+  </body>                                                                       
+  </html>                                                                       
+  O objetivo é voce criar um .md chamado tarefa-parte2.md contendo todos os     
+  arquivos e componentes em react para mim implementar manualmente cada parte,  
+  ideia é integrar a parte visual que vamos construir em react a nossa api. O   
+  padrao de .md pode seguir como foi feito no tarefa-parte2.md, se ficou com    
+  duvida, não hesite em perguntar para não alucinar e inventar código           
+
+● Vou ler o DESIGN.md e checar como está o front-end do projeto (package.json,
+  Vite, resources).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Já vi o DESIGN.md, as telas e a config do front — o projeto tem Vite 8,
+  Tailwind v4 e laravel-vite-plugin, mas ainda falta React. Antes de planejar,
+  preciso que você defina alguns pontos, já que a tela pede coisas que a API da
+  parte 1 não fornece hoje.
+
+● User answered Claude's questions:
+  ⎿  · Onde o React vai rodar? → Dentro do Laravel (Recomendado)
+     · A tela mostra dados que a API não salva hoje: país, horário da 
+     observação, vento, pressão e o código da condição (usado para escolher o 
+     ícone). Como tratar? → País? Qual a diferença entre consultado em e 
+     observado em? 
+     · Os filtros De/Até e a paginação ('1 a 7 de 11') não existem na API. Onde 
+     implementar? → Filtro por cidade ou por período, e a paginação, todos eles 
+     vamos adicionar os parametros na API e no service/repository
+     · Qual regra define o chip da última coluna da tabela? Na tela aparecem 
+     Estável, Normal, Frio, Calor e Ativo, e a legenda diz 'Variação em relação 
+     ao registro anterior da mesma cidade'. → pode ocultar esse campo, teremos 
+     cidade, data e hora da consulta, temperatura, sensação térmica,
+     umidade e descrição do tempo e os que precisarem ser adicionados me 
+     pergunte antes.
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Coluna de País pode remover também                                            
+
+● Confirmado: a tabela terá apenas cidade, data/hora da consulta, temperatura,
+  sensação, umidade e descrição, sem País nem chip de status, e por ora só
+  salvamos o consultado_em (não o horário real da medição). Agora vou revisar as
+  decisões pendentes sobre os campos novos.
+
+● User answered Claude's questions:
+  ⎿  · A coluna OBSERVAÇÃO (horário da medição na estação, campo dt da 
+     OpenWeather) deve existir? → Remover (Recomendado)
+     · Como escolher o ícone da condição (sol, nuvem, chuva, tempestade, 
+     neblina, noite) no card? → Pela descrição (Recomendado)
+     · O card mostra 'Vento / Pressão' (14 km/h · 1012 hPa), que não salvamos. O
+     que fazer? → Adicionar ao banco
+     · O card tem a 'Curva de variação diária' e Mínima/Média/Máxima. De onde 
+     vêm esses dados? → essa curva que tem ai é entre as consultas realizadas 
+     naquela cidade, é comparado os graus que foram, nao sei se voce consegue 
+     perceber
+
+● Entendi: cada ponto da curva é uma consulta da cidade selecionada com a
+  temperatura registrada, e Mínima, Média e Máxima são calculadas sobre esses
+  pontos. Com isso já tenho o que preciso para montar o plano.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: 
+     ~/.claude/plans/leia-o-arquivo-tarefa-parte1-md-abundant-clarke.md · /plan 
+     to edit
+     Plano: Parte 2 — Front-end React integrado à API (tarefa-parte2.md)
+
+     Contexto
+
+     A parte 1 (API Laravel de clima e municípios) está pronta, com 43 testes
+     passando. Agora o usuário quer a interface do WeatherApp em React, seguindo
+     o DESIGN.md (Loop Oceanic Systems), a tela de referência e o catálogo de
+     ícones que ele colou. A interface deve consumir a nossa API.
+
+     Como na parte 1, o usuário vai implementar manualmente. O entregável é um 
+     único arquivo tarefa-parte2.md na raiz, no mesmo formato do
+     implementacao.md: cada arquivo com uma breve descrição e o código completo,
+     em ordem de implementação. Nenhum arquivo da aplicação será alterado por
+     mim. Antes de escrever o .md, vou validar todo o código numa cópia do
+     projeto no scratchpad: testes PHP, npm run build e checagem de tipos.
+
+     Estado atual: Laravel 13, Vite 8, Tailwind v4 (@tailwindcss/vite) e
+     laravel-vite-plugin. Ainda não há React. O vite.config.js usa a fonte
+     Instrument Sans via bunny. A API usa namespaces em subpastas:
+     App\Services\Clima\ClimaService,
+     App\Repositories\Clima\ConsultaClimaRepository,
+     App\Models\Clima\ConsultaClima, App\Interfaces\WeatherProviderInterface
+     etc.
+
+     Decisões confirmadas com o usuário
+
+     - React dentro do Laravel, em TypeScript, em resources/js, servido por uma
+       view Blade na mesma origem (sem CORS).
+     - Tabela do histórico: colunas Cidade, Consulta (data/hora), Temperatura,
+       Sensação, Umidade e Descrição. Ficam fora: País, Observação e o chip de 
+       status.
+     - Ícone da condição derivado do texto da descrição (ex.: "céu limpo" →
+       wb_sunny), seguindo o catálogo de ícones e cores. Nenhum campo novo para
+       isso.
+     - Vento e pressão: adicionar ao banco (novos campos).
+     - Filtros por cidade e por período, e paginação, implementados na API
+       (parâmetros + Service/Repository).
+     - Curva de variação, Mínima, Média e Máxima calculadas sobre as consultas 
+       registradas da cidade selecionada: cada ponto é uma consulta, com a
+       temperatura daquele momento.
+
+     Decisões de design (minhas; ajustáveis na aprovação)
+
+     - Vento e pressão: colunas nullable vento_kmh decimal(5,1) e pressao_hpa
+       unsignedSmallInteger. A OpenWeather devolve wind.speed em m/s com
+       units=metric; converto para km/h (×3,6), e a pressão vem de
+       main.pressure. A regra de duplicidade continua comparando só os 4 campos 
+       originais (temperatura, sensação, umidade e descrição). Quando o registro
+       é redundante, atualizo o consultado_em e o vento e a pressão, para o
+       card mostrar o valor mais recente. Registros antigos ficam com null, e o
+       front exibe "—".
+     - Histórico na API: GET 
+       /api/clima/historico?cidade=&de=&ate=&page=&per_page=.
+       - de e ate filtram o consultado_em, no formato Y-m-d H:i (valor do <input
+         type="datetime-local">), com a regra ate >= de.
+       - per_page é 1–50, com padrão 10. A resposta tem o formato padrão do
+         paginator do Laravel (data, current_page, last_page, per_page, total,
+         from, to).
+       - Cache com versão: chave clima:historico:v{versao}:{md5(filtros)}, e
+         cada gravação incrementa clima:historico:versao. Isso invalida todas as
+         combinações de filtro de uma vez, já que o store database não suporta
+         tags. O cache continua guardando arrays (->toArray() do paginator), por
+         causa do serializable_classes => false.
+     - Select de cidades do filtro: novo GET /api/clima/cidades, que lista os
+       nomes distintos já consultados, com o mesmo cache versionado.
+     - Dados do card: o front chama historico?cidade=X&per_page=50 (as 50
+       consultas mais recentes da cidade, respeitando o período filtrado) e
+       calcula a curva, a mínima, a média e a máxima no cliente. Com uma única
+       consulta, mostra um aviso no lugar da curva.
+     - Autocomplete: debounce de 300 ms e mínimo de 2 caracteres, chamando GET 
+       /api/municipios. A sugestão mostra "Jales, SP", mas o POST envia só
+       cidade=Jales, mantendo a decisão da parte 1.
+     - Botões:
+       - Consultar faz o POST /api/clima, recarrega o histórico e seleciona o
+         registro retornado.
+       - Cancelar aborta a requisição em andamento (AbortController).
+       - Limpar zera o campo.
+       - Recarregar busca o histórico de novo.
+       - Filtrar e Limpar filtros aplicam e resetam os filtros.
+     - Erros: um banner exibe a mensagem erro da API (404, 502 e 503) ou a
+       primeira mensagem de validação (422).
+     - Gráfico: SVG próprio, sem biblioteca, no estilo da tela (área com
+       gradiente, ponto de pico e rótulos).
+     - Tema: os tokens do DESIGN.md vão para o @theme do Tailwind v4 em
+       resources/css/app.css. As fontes Inter, Plus Jakarta Sans e Material
+       Symbols Outlined vêm do Google Fonts, carregadas na Blade, e o
+       bunny/Instrument Sans sai do vite.config.js.
+     - O logotipo da Loop Sistemas fica como componente SVG, copiado da tela de
+       referência.
+
+     Estrutura do tarefa-parte2.md
+
+     Parte A: Backend
+     1. Migration add_vento_pressao_to_consulta_clima_table.
+     2. Ajustes de vento e pressão em DadosClima, OpenWeatherProvider::mapear(),
+        no model ConsultaClima (fillable e casts) e no ConsultaClimaRepository
+        (criar e atualizarDataConsulta).
+     3. HistoricoClimaRequest com de, ate, page e per_page.
+     4. ConsultaClimaRepository::historico(filtros, perPage, page) com
+        paginate() e cidadesConsultadas().
+     5. ClimaService: historico(filtros) paginado com cache versionado,
+        cidades() e invalidarCacheHistorico() (incrementa a versão).
+     6. ClimaController::historico e o novo cidades, mais a rota GET 
+        /api/clima/cidades.
+     7. Testes atualizados ou novos:
+        - Unit (ClimaServiceTest): cache por combinação de filtros, versão
+          incrementada após gravar, vento e pressão atualizados no caso
+          redundante.
+        - Feature (ClimaApiTest): filtro por período, ate < de retorna 422,
+          paginação (per_page, page, total), per_page > 50 retorna 422, endpoint
+          de cidades, vento e pressão salvos.
+
+     Parte B: Setup do front
+     1. npm i react react-dom e npm i -D @vitejs/plugin-react typescript 
+        @types/react @types/react-dom.
+     2. vite.config.js (plugin React e entrada resources/js/main.tsx),
+        tsconfig.json, resources/css/app.css (@theme com os tokens),
+        resources/views/app.blade.php (fontes, @viteReactRefresh e @vite) e
+        routes/web.php (rota / → view app).
+
+     Parte C: React (resources/js/)
+     - main.tsx e App.tsx: estado global da tela (filtros, página, registro
+       selecionado).
+     - types/clima.ts: ConsultaClima, Municipio, Paginado<T>, FiltrosHistorico.
+     - api/client.ts: fetch com Accept: application/json, AbortSignal e a classe
+       ApiError, que extrai erro ou errors. Também api/municipios.ts e
+       api/clima.ts.
+     - hooks/useDebounce.ts, hooks/useAutocomplete.ts, hooks/useHistorico.ts e
+       hooks/useConsultasCidade.ts.
+     - utils/formatadores.ts (23,1 °C e 28/09/2026 10:17, em pt-BR),
+       utils/iconeClima.ts (descrição → ícone, cor e fundo, conforme o catálogo)
+       e utils/estatisticas.ts (mínima, média e máxima).
+     - Componentes:
+       - Header (logo SVG), BarraConsulta (input com autocomplete, Limpar,
+         Consultar e Cancelar) e AlertaErro;
+       - PainelHistorico, FiltrosHistorico, TabelaHistorico (linha selecionada
+         com radio_button_checked) e Paginacao;
+       - CardTelemetria, WidgetCondicao, CurvaTemperatura (SVG) e
+         MiniEstatisticas.
+
+     Parte D: Como rodar e validar: php artisan migrate, php artisan test, npm 
+     run dev + php artisan serve e um roteiro de teste manual.
+
+     Arquivo crítico
+
+     - Criar: /home/tiago/weatherapp-loopv2/tarefa-parte2.md (o único arquivo
+       que vou escrever no projeto).
+     - Referenciados no conteúdo: os arquivos de Clima listados acima,
+       vite.config.js, package.json, resources/css/app.css, routes/web.php e os
+       novos arquivos em resources/js/ e resources/views/app.blade.php.
+
+     Verificação (feita por mim antes de entregar o .md)
+
+     - Numa cópia do projeto no scratchpad, aplicar todo o código do .md e
+       conferir:
+       - php artisan test com tudo verde;
+       - npx tsc --noEmit sem erros;
+       - npm run build concluindo com sucesso;
+       - php artisan serve + curl em /, /api/clima/historico?per_page=2&page=1 e
+         /api/clima/cidades.
+     - Depois que o usuário implementar: abrir http://localhost:8000 e seguir o
+       roteiro manual do .md:
+       a. digitar "jal" e ver a sugestão "Jales, SP";
+       b. clicar em Consultar e ver a nova linha selecionada, com o card
+          preenchido;
+       c. consultar de novo e ver o mesmo registro com o horário atualizado;
+       d. testar o filtro por cidade e período e a paginação;
+       e. clicar em Cancelar durante uma consulta;
+       f. buscar uma cidade inexistente e ver o banner de erro.
+
+● O plano foi aprovado. Vou copiar o projeto atual para o scratchpad e ler os
+  arquivos de clima como estão hoje, para que o código do .md parta exatamente
+  do seu estado.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Vou aplicar as mudanças de backend na cópia. Antes, preciso conferir o
+  timezone da aplicação, porque ele afeta o filtro por período:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O timezone é UTC. Então o front vai mandar as datas do filtro em ISO com
+  offset (toISOString()), e o backend converte para o fuso da aplicação. Agora
+  as mudanças de backend:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Apenas os testes unitários de cache falharam, como esperado, já que testavam a
+  API antiga de chaves; os testes de feature continuam passando pois a resposta
+  paginada mantém o data. Agora vou reescrever esses testes unitários.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● O teste unitário passa: 15 de 15. Agora os testes de feature para os
+  parâmetros novos:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Os 404 na rota /api/clima/cidades são causados pelo cache de rotas
+  (bootstrap/cache/routes-v7.php) copiado junto. Vou adicionar php artisan 
+  optimize:clear como passo obrigatório no .md, já que isso vai acontecer no
+  projeto também.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os 56 testes passam. Os avisos do Pint são de arquivos seus, que não mexi
+  (falta de linha em branco no fim do arquivo). Vou conferir só os arquivos que
+  eu alterei:
+
+  Ran 1 shell command (ctrl+o to expand)
+● O backend está pronto. Agora o front: vou instalar as dependências na cópia.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Vieram TypeScript 7 e @vitejs/plugin-react 6, versões recentes. Vou conferir
+  como elas são usadas antes de escrever a configuração, para não chutar API:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O tsc do TypeScript 7 e o uso do @vitejs/plugin-react 6 são os usuais. Vou ver
+  o app.css atual, por causa das diretivas @source do Tailwind v4:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora os arquivos de setup e todo o código React. Começo pela configuração,
+  tipos, cliente da API e utilitários:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora os hooks:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora os componentes, começando pelo logotipo (paths copiados da sua tela) e
+  pelo cabeçalho:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora a barra de consulta com autocomplete:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora filtros, tabela e paginação:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora as peças do card de telemetria, incluindo a curva em SVG:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Por último: o painel do histórico, o App e o ponto de entrada.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O build passou. O tsc não imprimiu nada, mas a saída dele passa pelo filtro do
+  rtk. Vou rodar sem o filtro para ter certeza de que a checagem de tipos
+  realmente aconteceu:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A checagem de tipos está limpa, e confirmei que ela pega erros de verdade.
+  Agora vou subir a aplicação na cópia e testar ponta a ponta:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A migration rodou, a chave da OpenWeather está configurada e há um Chrome
+  disponível. Vou subir o servidor e testar a API real:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O problema está na chave da OpenWeather no .env, que está sendo recusada com
+  erro 401 — validação, paginação e endpoint de cidades funcionam normalmente.
+  Para testar a interface ponta a ponta mesmo assim, vou apontar uma cópia para
+  uma OpenWeather falsa local no scratchpad e popular o histórico com dados de
+  exemplo.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A consulta de Votuporanga voltou uma resposta que não é JSON. Vou ver o
+  conteúdo cru:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Funcionou: a falha anterior foi pontual, do servidor de desenvolvimento, e a
+  consulta não chegou a gravar nada (o id seguiu em sequência). Agora vou
+  renderizar a tela no Chrome headless:
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● A tela está próxima da referência, com horários corretamente ajustados para
+  -3h (fuso local) em relação aos dados em UTC. Agora vou testar as interações
+  (autocomplete, consulta, cancelar, filtros e erro) controlando o Chrome via
+  DevTools Protocol.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O filtro falhou porque meu script buscava o texto exato do botão, mas o
+  innerText inclui o nome do ícone (filter_alt Filtrar), impedindo o clique. Vou
+  checar a captura do passo onde ocorreu o erro 404 esperado que não apareceu.
+
+  Read 1 file (ctrl+o to expand)
+
+● O botão travou em "Consultando…" porque o servidor e a API falsa processam uma
+  requisição por vez — confirmo que cancelar só interrompe a espera no
+  navegador, não a requisição já recebida pelo servidor, e vou documentar isso.
+  Também vou ajustar a posição dos rótulos da curva, corrigir os seletores do
+  script e rodar o teste de novo.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora todos os passos passam. Vou conferir as linhas filtradas e as capturas
+  do filtro, do autocomplete e do celular:
+
+  Ran 1 shell command (ctrl+o to expand)
+● O filtro está correto: só as consultas de Jales entre 00:00 e 12:00 do dia
+  03/10, no horário local.
+
+  Read 3 files (ctrl+o to expand)
+
+● Confirmei que tudo funciona, inclusive no celular, e que o Cancelar realmente
+  falhou (a consulta de São Paulo ficou gravada no histórico). Encontrei também
+  um detalhe visual: "18,4 °C" quebra em duas linhas no celular, então vou
+  ajustar para impedir a quebra nas colunas numéricas.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os testes falharam porque eu apontei o .env da cópia para a OpenWeather falsa,
+  e os testes interceptam só api.openweathermap.org. Vou restaurar o .env e
+  rodar de novo:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Os 56 testes voltaram a passar e os servidores de teste foram encerrados.
+  Agora vou gerar o tarefa-parte2.md a partir dos arquivos validados:
+
+● Bash(S=/tmp/claude-1000/-home-tiago-weatherapp-loopv2/72964788-c93c-4263-84eb-
+      a5fbdd3438fd/scratchpad; cd $S/p2 && python3 - <<'PYEOF'
+      import re…)
+  ⎿  2804 /home/tiago/weatherapp-loopv2/tarefa-parte2.md
+     51
+     138:    private function mapear(?array $dados): DadosClima
+     … +7 lines (ctrl+o to expand)
+  ⎿  1 file changed (binary, mode only or too large to show)
+
+● O documento tem 51 seções. Como verificação final, vou aplicar o próprio .md
+  numa cópia nova do projeto — extraindo cada bloco de código e rodando testes,
+  tsc e build — para confirmar que o documento em si está correto.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Confirmei que os arquivos são idênticos e nenhum teste falhou nessa nova
+  execução — indício de um teste instável. Vou rodar a suíte várias vezes para
+  identificar qual é.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Doze execuções seguidas, todas com 56 de 56. A falha só apareceu na primeira
+  rodada logo depois do optimize:clear, então vou testar exatamente essa
+  sequência:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Não reproduzi o erro diretamente, mas notei que a primeira execução ocorreu
+  antes do npm run build — suspeito que tests/Feature/ExampleTest.php (GET /)
+  falhe porque a view usa @vite, que exige public/build/manifest.json. Vou
+  testar sem o build para confirmar.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Confirmei que o ExampleTest falha com ViteManifestNotFoundException sem o
+  build — é uma dependência de ordem, não instabilidade, e por isso quebraria em
+  qualquer CI sem npm run build. Vou usar withoutVite(), substituir por um
+  teste da página e incluí-lo no .md.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora passa com e sem o build: 56 testes, 201 asserções. Vou atualizar o .md
+  com o teste novo e os números corretos:
+
+● Bash(python3 - <<'EOF'
+      p='tarefa-parte2.md'; s=open(p).read()…)
+  ⎿  6:- `php artisan test`: **56 testes / 201 asserções passando**, com ou
+      sem `npm run build`. Antes eram 43; entraram testes de paginação, fil
+     tros, cidades, vento e pressão, e o `ExampleTest` foi trocado por um t
+     … +10 lines (ctrl+o to expand)
+  ⎿  Updated tarefa-parte2.md (+28 -1)
+      3  Guia de implementação do front-end do WeatherApp. Cada arquivo a
+         parece com uma breve descrição e o código completo, na ordem sug
+         erida, no mesmo formato do `implementacao.md`.
+      4  
+      5  **Tudo abaixo foi validado** numa cópia do projeto (com os seus 
+         namespaces atuais):
+      6 -- `php artisan test`: **56 testes / 199 asserções passando**. An
+        -tes eram 43; entraram testes de paginação, filtros, cidades, ven
+        -to e pressão.                                                   
+      6 +- `php artisan test`: **56 testes / 201 asserções passando**, co
+        +m ou sem `npm run build`. Antes eram 43; entraram testes de pagi
+        +nação, filtros, cidades, vento e pressão, e o `ExampleTest` foi 
+        +trocado por um teste da página inicial.                         
+      7  - `npx tsc --noEmit` sem erros e `npm run build` concluindo com 
+         sucesso.
+      8  - Teste ponta a ponta no Chrome headless, com uma OpenWeather fa
+         lsa local:
+      9    - o autocomplete sugere "Jales, SP";
+     ...
+      1136  Route::view('/', 'app');
+      1137  ```
+      1138  
+      1139 +### `tests/Feature/PaginaInicialTest.php`                    
+      1140 +                                                             
+      1141 +**Apague o `tests/Feature/ExampleTest.php`** e crie este test
+           +e no lugar. O `ExampleTest` faz `GET /`, que agora renderiza 
+           +a view com `@vite`. Sem ter rodado `npm run build`, ele quebr
+           +a com `ViteManifestNotFoundException`; isso aconteceu na vali
+           +dação. O `withoutVite()` tira essa dependência: `php artisan 
+           +test` passa com ou sem os assets compilados.                 
+      1142 +                                                             
+      1143 +```php                                                       
+      1144 +<?php                                                        
+      1145 +                                                             
+      1146 +namespace Tests\Feature;                                     
+      1147 +                                                             
+      1148 +use PHPUnit\Framework\Attributes\Test;                       
+      1149 +use Tests\TestCase;                                          
+      1150 +                                                             
+      1151 +class PaginaInicialTest extends TestCase                     
+      1152 +{                                                            
+      1153 +    #[Test]                                                  
+      1154 +    public function pagina_inicial_carrega_o_app_react(): voi
+           +d                                                            
+      1155 +    {                                                        
+      1156 +        $this->withoutVite();                                
+      1157 +                                                             
+      1158 +        $this->get('/')                                      
+      1159 +            ->assertOk()                                     
+      1160 +            ->assertSee('<div id="app"></div>', false)       
+      1161 +            ->assertSee('WeatherApp');                       
+      1162 +    }                                                        
+      1163 +}                                                            
+      1164 +```                                                          
+      1165 +                                                             
+      1166  ## Parte C: Código React (`resources/js/`)
+      1167  
+     … 1 more lines (ctrl+o to expand)
+
+● O tarefa-parte2.md está pronto na raiz do projeto. Ele traz 44 arquivos, cada
+  um com descrição e código completo, no mesmo formato do implementacao.md. No
+  seu projeto, o único arquivo novo é esse .md.
+
+  Para confirmar que o documento funciona, apliquei o próprio .md numa cópia
+  nova do seu projeto, bloco por bloco, seguindo as instruções. Resultado:
+  - Testes PHP: 56 de 56 passando (eram 43), com ou sem npm run build.
+  - Front: tsc sem erros e npm run build concluindo com sucesso.
+  - Teste no Chrome headless, com uma OpenWeather falsa local e dados de
+    exemplo:
+    - o autocomplete sugere "Jales, SP";
+    - Consultar seleciona o registro novo;
+    - uma consulta repetida mostra o aviso de que só a data foi atualizada;
+    - Cancelar funciona;
+    - uma cidade inexistente mostra o banner vermelho;
+    - o filtro por cidade e período e a paginação funcionam;
+    - no celular não há rolagem horizontal;
+    - nenhum erro no console.
+
+  Três coisas que você precisa saber antes de implementar:
+  - Sua OPENWEATHER_API_KEY está sendo recusada pela OpenWeather (HTTP 401). A
+    API responde corretamente com "Falha de autenticação…", mas nenhuma consulta
+    real vai funcionar até a chave ser corrigida ou ativada no painel da
+    OpenWeather.
+  - Rode php artisan optimize:clear antes de testar. O cache de rotas que
+    encontrei antes faz a rota nova /api/clima/cidades e a página /
+    responderem 404. Isso aconteceu na validação.
+  - O ExampleTest precisa ser trocado. Ele quebra se npm run build ainda não
+    tiver rodado, porque agora / carrega a view com @vite. O .md traz um teste
+    novo da página inicial que usa withoutVite().
+
+  Escolhas que fiz e que você pode querer ajustar:
+  - Vento e pressão não contam para a duplicidade. Quando a consulta é repetida,
+    eles só são atualizados junto com a data/hora.
+  - O badge do card mostra "Última leitura" ou "Leitura anterior" em vez de
+    "Tempo Real", porque os dados não são em tempo real.
+  - A umidade aparece como "(Baixa)" abaixo de 40% e "(Alta)" acima de 70%. Os
+    limites ficam em constantes fáceis de mudar.
+  - Cancelar só interrompe a espera no navegador. Se o servidor já recebeu a
+    requisição, ele termina e grava o registro. Isso aconteceu no teste: uma
+    consulta cancelada apareceu depois no histórico. O .md explica isso.
+
+  Na seção "Parte D" do .md estão os comandos para rodar e um roteiro de teste
+  manual em 8 passos.
+
+✻ Worked for 16m 16s · done domingo, 18:30
+
+※ recap: Estamos construindo o WeatherApp (API Laravel com front React), que você implementa à mão a partir dos guias; o `tarefa-parte2.md` com o front está pronto e validado. Próximo passo: corrigir sua chave da OpenWeather, que está dando 401, e começar a implementar pela Parte A.
+
+❯ Atualize o .md, só vou usar a velocidade do vento, a pressao não              
+
+● Vou tirar a pressão de todo o fluxo: migration, DTO, provider, model,
+  repository, testes e card. Primeiro, um levantamento de onde ela aparece na
+  cópia validada:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Vou remover a pressão do código na cópia validada:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora são 57 testes passando, incluindo o caso de vento ausente da
+  OpenWeather, com tipos, build e Pint limpos. Vou atualizar o .md com os blocos
+  de código regenerados a partir dos arquivos validados, removendo as menções à
+  pressão.
+
+● Bash(S=/tmp/claude-1000/-home-tiago-weatherapp-loopv2/72964788-c93c-4263-84eb-
+      a5fbdd3438fd/scratchpad; cd /home/tiago/weatherapp-loopv2 && cp
+      tarefa-parte2.md $S/tar…)
+  ⎿  blocos alterados: 10
+     2817:      "pressao_hpa": 1012,
+     2816:      "vento_kmh": 14,
+     2817:      "pressao_hpa": 1012,
+  ⎿  Updated tarefa-parte2.md (+41 -43)
+      3  Guia de implementação do front-end do WeatherApp. Cada arquivo a
+         parece com uma breve descrição e o código completo, na ordem sug
+         erida, no mesmo formato do `implementacao.md`.
+      4  
+      5  **Tudo abaixo foi validado** numa cópia do projeto (com os seus 
+         namespaces atuais):
+      6 -- `php artisan test`: **56 testes / 201 asserções passando**, co
+        -m ou sem `npm run build`. Antes eram 43; entraram testes de pagi
+        -nação, filtros, cidades, vento e pressão, e o `ExampleTest` foi 
+        -trocado por um teste da página inicial.                         
+      6 +- `php artisan test`: **57 testes / 202 asserções passando**, co
+        +m ou sem `npm run build`. Antes eram 43; entraram testes de pagi
+        +nação, filtros, cidades e velocidade do vento, e o `ExampleTest`
+        + foi trocado por um teste da página inicial.                    
+      7  - `npx tsc --noEmit` sem erros e `npm run build` concluindo com 
+         sucesso.
+      8  - Teste ponta a ponta no Chrome headless, com uma OpenWeather fa
+         lsa local:
+      9    - o autocomplete sugere "Jales, SP";
+     ...
+      20  ```
+      21  GET  /                                   → view Blade que monta
+           o React (resources/js/main.tsx)
+      22  GET  /api/municipios?busca=jal           → autocomplete (já exi
+          stia)
+      23 -POST /api/clima?cidade=Jales             → consulta e grava (já
+         - existia; agora salva vento e pressão)                         
+      23 +POST /api/clima?cidade=Jales             → consulta e grava (já
+         + existia; agora também salva a velocidade do vento)            
+      24  GET  /api/clima/historico?cidade=&de=&ate=&page=&per_page=   → 
+          histórico PAGINADO e filtrado (mudou)
+      25  GET  /api/clima/cidades                  → cidades já consultad
+          as, para o select do filtro (novo)
+      26  ```
+     ...
+      44  ### Decisões importantes
+      45  - **Tabela:** Cidade, Consulta (data/hora), Temp., Sensação, Um
+          idade e Descrição. Sem País, sem Observação e sem chip de statu
+          s, como você pediu.
+      46  - **Ícone da condição:** escolhido pelo **texto da descrição** 
+          (`utils/iconeClima.ts`), seguindo o catálogo de ícones e cores.
+           Descrições desconhecidas usam `device_thermostat`. Não diferen
+          cia dia e noite.
+      47 -- **Vento e pressão:** colunas novas e nullable. A OpenWeather 
+         -manda o vento em m/s (com `units=metric`), e convertemos para k
+         -m/h (×3,6). A **regra de duplicidade não mudou**: só temperatur
+         -a, sensação, umidade e descrição contam. Quando o registro é re
+         -dundante, atualizamos a data/hora **e** o vento e a pressão. Re
+         -gistros antigos ficam com `null`, e a tela mostra "—".         
+      47 +- **Velocidade do vento:** coluna nova e nullable (`vento_kmh`)
+         +. A OpenWeather manda o vento em m/s (com `units=metric`), e co
+         +nvertemos para km/h (×3,6). A pressão atmosférica **não** é sal
+         +va nem exibida. A **regra de duplicidade não mudou**: só temper
+         +atura, sensação, umidade e descrição contam. Quando o registro 
+         +é redundante, atualizamos a data/hora **e** o vento. Registros 
+         +antigos (ou respostas sem vento) ficam com `null`, e a tela mos
+         +tra "—".                                                       
+      48  - **Paginação e filtros na API:** a resposta do histórico agora
+           tem o formato padrão do paginator do Laravel (`data`, `current
+          _page`, `last_page`, `per_page`, `total`, `from`, `to`…). O pad
+          rão é 10 por página, com máximo de 50. `de` e `ate` filtram o `
+          consultado_em`, e o `ate` inclui o minuto inteiro (10:17 vai at
+          é 10:17:59).
+      49  - **Fuso horário:** o banco guarda em UTC (`config/app.php`). O
+           front converte o `datetime-local` (horário local) para ISO em 
+          UTC com `toISOString()`, e a API converte para o fuso da aplica
+          ção antes de filtrar. A tabela mostra os horários no fuso do na
+          vegador.
+      50  - **Cache versionado:** como o store `database` não suporta tag
+          s, cada combinação de filtros tem a sua chave (`clima:historico
+          :v{versao}:...`). Toda gravação incrementa `clima:historico:ver
+          sao`, o que invalida tudo de uma vez. O cache continua guardand
+          o **arrays**, por causa do `serializable_classes => false`.
+     ...
+      59  
+      60  ---
+      61  
+      62 -## Parte A: Backend (vento, pressão, filtros e paginação)      
+      62 +## Parte A: Backend (velocidade do vento, filtros e paginação) 
+      63  
+      64 -### `database/migrations/2026_10_04_000001_add_vento_pressao_to
+         -_consulta_clima_table.php`                                     
+      64 +### `database/migrations/2026_10_04_000001_add_vento_kmh_to_con
+         +sulta_clima_table.php`                                         
+      65  
+      66 -Migration nova: adiciona `vento_kmh` e `pressao_hpa` à `consult
+         -a_clima`. As duas são nullable, porque os registros antigos não
+         - têm esses dados.                                              
+      66 +Migration nova: adiciona `vento_kmh` à `consulta_clima`. É null
+         +able, porque os registros antigos não têm esse dado.           
+      67  
+      68  ```php
+      69  <?php
+     ...
+      78      {
+      79          Schema::table('consulta_clima', function (Blueprint $ta
+          ble) {
+     … 248 more lines (ctrl+o to expand)
+
+● Bash(python3 - <<'EOF'
+      p='tarefa-parte2.md'; s=open(p).read()…)
+  ⎿  47:- **Velocidade do vento:** coluna nova e nullable (`vento_kmh`). A
+     OpenWeather manda o vento em m/s (com `units=metric`), e convertemos p
+     830:            ->assertJsonMissingPath('data.pressao_hpa');
+     1248:    const parametros = new URLSearchParams();
+  ⎿  Updated tarefa-parte2.md (+0 -1)
+      2814        "umidade": 34,
+      2815        "descricao": "céu limpo",
+      2816        "vento_kmh": 14,
+      2817 -      "pressao_hpa": 1012,                                   
+      2817        "consultado_em": "2026-10-04T21:25:10.000000Z"
+      2818      }
+      2819    ],
+
+● Só restaram as menções intencionais — a nota sobre a pressão não ser salva e o
+  teste que garante sua ausência na resposta. Vou agora repetir a verificação
+  final, aplicando o .md atualizado numa cópia nova do projeto.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Atualizei o tarefa-parte2.md: a velocidade do vento continua, a pressão saiu
+  do banco, da API, dos testes e da tela. Apliquei o .md atualizado do zero numa
+  cópia nova do seu projeto e tudo passou:
+  - Testes: 57 de 57 (202 asserções), com e sem npm run build.
+  - Front: tsc sem erros e build concluído.
+  - Migration: roda e cria só a coluna vento_kmh.
+  - Nenhuma referência à pressão sobrou no código da aplicação.
+
+  Não refiz o teste visual no Chrome depois dessa mudança. No card, só o
+  mini-card de baixo mudou, e o restante da tela é o mesmo que já validei.
+
+  O que mudou no .md:
+  - Migration: passou a se chamar
+    2026_10_04_000001_add_vento_kmh_to_consulta_clima_table.php e cria só
+    vento_kmh.
+  - Backend: DadosClima, OpenWeatherProvider::mapear(), o model ConsultaClima e
+    o ConsultaClimaRepository tratam só o vento. Quando a consulta é repetida, o
+    vento é atualizado junto com a data/hora, e ele continua sem contar para a
+    regra de duplicidade.
+  - Card: o mini-card "Vento / Pressão" virou "Velocidade do vento", mostrando
+    só 14,0 km/h (ou "—" quando não há valor).
+  - Testes:
+    - os testes de pressão foram removidos;
+    - um teste garante que pressao_hpa não aparece na resposta;
+    - um teste novo cobre o caso em que a OpenWeather não envia vento: o valor
+      fica nulo e a tela mostra "—".
+  - Textos: as descrições, o exemplo de JSON e o roteiro manual foram
+    atualizados.
+
+  As observações anteriores continuam valendo: rodar php artisan optimize:clear
+  antes de testar e corrigir a OPENWEATHER_API_KEY, que a OpenWeather está
+  recusando com HTTP 401.
+
+✻ Baked for 1m 26s · done domingo, 18:40
+
+※ recap: O objetivo é criar a interface React do WeatherApp integrada à API, e o tarefa-parte2.md já está atualizado sem a pressão, guardando só a velocidade do vento, com tudo validado. O próximo passo é você implementar seguindo o .md, começando por rodar php artisan optimize:clear.
+❯ Mude todo o código gerado na parte do frontend para ingles, menos os textos   
+  informados para o usuário na tela                                             
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ e coloque no .md                                                              
+
+● Vou traduzir para inglês todo o código do front: nomes de arquivos,
+  componentes, funções, variáveis, tipos e comentários. Os textos que aparecem
+  na tela continuam em português. Os nomes dos campos do JSON (cidade,
+  temperatura, consultado_em…) e os parâmetros da API (busca, cidade, de, ate)
+  também ficam como estão, porque são o contrato com o backend, que segue em
+  português. Começo pela base: tipos, API, utilitários e hooks.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora os componentes. O logo reaproveito do arquivo validado, só renomeando a
+  função:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora o card, o gráfico, o painel, o App e o main:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O tsc e o build passaram. Vou procurar identificadores que tenham sobrado em
+  português, ignorando strings de tela e campos da API:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os resultados são todos falsos positivos: Paginated/Pagination já são inglês,
+  e o resto são textos de tela. Agora vou repetir o teste ponta a ponta no
+  Chrome com o código traduzido:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● No passo 3 não apareceu o aviso porque a leitura mais recente de Jales (31,1
+  °C) difere da que a OpenWeather simulada retornou (30,5 °C), então foi criado
+  um registro novo corretamente. Vou rodar o roteiro de novo, pois a segunda
+  consulta de Jales deve ser redundante e aí sim mostrar o aviso.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O aviso aparece. O pkill acabou derrubando o próprio comando (o padrão casou
+  com a linha de comando dele), então vou terminar a limpeza e os testes em
+  separado:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Todos os 57 testes continuam passando. Agora vou atualizar o .md — árvore de
+  componentes, menções a nomes antigos, app.css e toda a Parte C com os arquivos
+  novos — começando pela busca dos nomes antigos fora da Parte C.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora reescrevo a Parte C e ajusto os outros pontos:
+
+● Bash(S=/tmp/claude-1000/-home-tiago-weatherapp-loopv2/72964788-c93c-4263-84eb-
+      a5fbdd3438fd/scratchpad; cd /home/tiago/weatherapp-loopv2 && cp
+      tarefa-parte2.md $S/tar…)
+  ⎿  1064:Tailwind v4: os tokens do `DESIGN.md` e da tela viram classes (`b
+     g-primary`, `text-primary-dark`, `border-border-tint`, `font-display`…
+     ). As regras de `.material-symbols-outlined` controlam o ícone vazado
+     … +2 lines (ctrl+o to expand)
+  ⎿  1 file changed (binary, mode only or too large to show)
+
+● Só sobrou "preenchido" num texto explicativo em português, o que está certo.
+  Verificação final: aplicar o .md do zero numa cópia nova e comparar com a
+  versão testada no Chrome.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O script de verificação quebrou porque o teste registra_consulta_e_retorna_201
+  não existe mais em ClimaApiTest.php, provavelmente por mudanças feitas no
+  projeto. Vou verificar o estado atual dos arquivos.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Já vi que o backend foi commitado, com os testes no formato novo. Agora vou
+  comparar seu backend com o especificado no .md e rodar a suíte de testes do
+  projeto.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O seu backend está idêntico ao do .md, com exceção do ClimaApiTest: falta o
+  primeiro teste, registra_consulta_e_retorna_201. Vou confirmar a diferença:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Faltam na sua cópia do ClimaApiTest o teste registra_consulta_e_retorna_201 e
+  o use Illuminate\Support\Str;, o que está causando falhas na suíte. Vou
+  verificar quais testes estão falhando.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Seis falhas são causadas pela ausência do use Illuminate\Support\Str;, e a
+  sétima parece ligada ao cache de rotas deixando /api/clima/cidades em 404. Vou
+  confirmar isso numa cópia do projeto, sem alterar o original.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Confirmado: com o cache limpo e o use adicionado, os 56 testes passam. Agora
+  vou aplicar as Partes B e C do .md atualizado sobre essa cópia do projeto.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Atualizei o tarefa-parte2.md: todo o código do front agora está em inglês, e
+  só os textos que aparecem na tela continuam em português. A parte de backend
+  (PHP) não mudou.
+
+  O que ficou em inglês:
+  - Arquivos:
+    - types/weather.ts;
+    - api/municipalities.ts e api/weather.ts;
+    - utils/formatters.ts, utils/weatherIcon.ts e utils/statistics.ts;
+    - hooks/useRequest.ts e hooks/useHistory.ts.
+  - Componentes: SearchBar, HistoryPanel, HistoryFilters, HistoryTable,
+    Pagination, TelemetryCard, TemperatureChart, StatsTiles, ConditionWidget,
+    Alert, Icon e LoopLogo.
+  - Funções, variáveis, props, tipos e comentários: por exemplo WeatherRecord,
+    useCityRecords, registerWeatherQuery, onSearch e selected.
+  - Classe CSS: .preenchido virou .filled no app.css.
+
+  O que continua em português, de propósito:
+  - os nomes dos campos do JSON (cidade, temperatura, consultado_em…) e os
+    parâmetros da API (busca, cidade, de, ate), porque são o contrato com o
+    backend. O fetchHistory() recebe city/from/to/perPage em inglês e traduz
+    para a API;
+  - os termos de busca do mapeamento de ícones ("chuva", "nublado"…), porque são
+    comparados com as descrições da OpenWeather em português.
+
+  Expliquei essa regra numa nova seção "Idioma do código" do .md.
+
+  Verificação:
+  - Repeti o teste ponta a ponta no Chrome com o código traduzido. Autocomplete,
+    consulta, aviso de consulta repetida, Cancelar, erro 404, filtros,
+    paginação e celular funcionaram, sem erros no console.
+  - Apliquei as Partes B e C do .md sobre uma cópia do seu projeto atual: 56
+    testes passando, tsc sem erros e build concluído. O front aplicado é
+    idêntico ao que testei no Chrome.
+
+  Problemas no seu projeto atual (vi que você já commitou a parte de backend).
+  Hoje php artisan test dá 49 de 56, por três motivos:
+  1. Falta use Illuminate\Support\Str; no tests/Feature/ClimaApiTest.php. Isso
+     causa 6 falhas com Class "Tests\Feature\Str" not found.
+  2. O cache de rotas continua ativo e deixa /api/clima/cidades em 404, o que
+     causa a 7ª falha. Rode php artisan optimize:clear.
+  3. O teste registra_consulta_e_retorna_201 foi apagado do ClimaApiTest,
+     provavelmente junto quando você substituiu o respostaOpenWeather(). Ele não
+     quebra nada, mas deixou de cobrir o caso de criação. O código dele está no
+     implementacao.md.
+
+  Numa cópia do seu projeto, corrigir os itens 1 e 2 deixou tudo verde. A
+  migration foi criada como add_vento_hmh_... (com "hmh" em vez de "kmh");
+  funciona igual, é só o nome.
+
+✻ Worked for 6m 12s · done domingo, 20:06
+
+❯ Faça esse ajuste, antes disso me responda:                                    
+  const RULES: Rule[] = [                                                       
+      {                                                                         
+          terms: ['trovoada', 'tempestade', 'raio'],                            
+          visual: { icon: 'thunderstorm', filled: true, iconColor:              
+  'text-indigo-600', background: 'bg-indigo-50', border: 'border-indigo-200' }, 
+      },                                                                        
+      {                                                                         
+          terms: ['chuva forte', 'chuva muito forte', 'chuva extrema', 'chuva   
+  intensa', 'aguaceiro'],                                                       
+          visual: { icon: 'rainy_heavy', filled: true, iconColor:               
+  'text-primary-dark', background: 'bg-blue-100', border: 'border-blue-200' },  
+      },                                                                        
+      {                                                                         
+          terms: ['chuva', 'garoa', 'chuvisco'],                                
+          visual: { icon: 'rainy', filled: true, iconColor: 'text-blue-500',    
+  background: 'bg-blue-50', border: 'border-blue-200' },                        
+      },                                                                        
+      {                                                                         
+          terms: ['nevoa', 'neblina', 'nevoeiro', 'bruma', 'fumaca', 'poeira',  
+  'areia', 'cinza'],                                                            
+          visual: { icon: 'foggy', filled: false, iconColor: 'text-slate-600',  
+  background: 'bg-slate-100', border: 'border-slate-200' },                     
+      },                                                                        
+      {                                                                         
+          terms: ['vento', 'rajada', 'ventania', 'tornado'],                    
+          visual: { icon: 'air', filled: false, iconColor: 'text-teal-600',     
+  background: 'bg-teal-50', border: 'border-teal-200' },                        
+      },                                                                        
+      {                                                                         
+          terms: ['algumas nuvens', 'poucas nuvens'],                           
+          visual: { icon: 'filter_drama', filled: true, iconColor:              
+  'text-amber-600', background: 'bg-amber-50', border: 'border-amber-200' },    
+      },                                                                        
+      {                                                                         
+          terms: ['nuvens dispersas', 'parcialmente nublado'],                  
+          visual: { icon: 'partly_cloudy_day', filled: true, iconColor:         
+  'text-sky-500', background: 'bg-sky-50', border: 'border-sky-200' },          
+      },                                                                        
+      {                                                                         
+          terms: ['nublado', 'encoberto', 'nuvens'],                            
+          visual: { icon: 'cloud', filled: true, iconColor: 'text-slate-500',   
+  background: 'bg-slate-100', border: 'border-slate-200' },                     
+      },                                                                        
+      {                                                                         
+          terms: ['ceu limpo', 'limpo', 'ensolarado', 'sol'],                   
+          visual: { icon: 'wb_sunny', filled: true, iconColor:                  
+  'text-amber-500', background: 'bg-amber-50', border: 'border-amber-200' },    
+      },                                                                        
+  ];                                                                            
+  essa função esta mapeando corretamente os dados vindo do open weather?        
+
+● Antes de responder, preciso confirmar quais textos a OpenWeather realmente
+  devolve com lang=pt_br, em vez de responder de memória. Vou pesquisar:
+● Web Search("openweathermap lang pt_br description "nuvens dispersas" "algumas
+            nuvens" "céu limpo" "chuva" list")
+  ⎿  Did 1 search in 5s
+
+● Fetch(https://openweathermap.org/weather-conditions)
+  ⎿  Received 393.7KB (200 OK)
+
+● A documentação oficial lista as 55 condições em inglês, mas não as traduções.
+  Vou procurar as strings exatas em pt_br, porque o mapeamento depende delas:
+
+● Web Search("openweathermap pt_br "chuva moderada" "trovoada" "nublado" "névoa"
+            "chuva de intensidade" description")
+  ⎿  Did 1 search in 6s
+
+● Não encontrei fonte oficial com os textos em pt_br, e sua chave da OpenWeather
+  retornou erro 401, impedindo consultar a API real. Vou responder com o que
+  posso confirmar com segurança e depois aplicar os ajustes no seu projeto.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(tests/Feature/ClimaApiTest.php)
+  ⎿  Added 1 line
+       5  use App\Models\Clima\ConsultaClima;
+       6  use Illuminate\Foundation\Testing\RefreshDatabase;
+       7  use Illuminate\Support\Facades\Http;
+       8 +use Illuminate\Support\Str;                                    
+       9  use PHPUnit\Framework\Attributes\Test;
+      10  use Tests\TestCase;
+      11  
+
+● Update(tests/Feature/ClimaApiTest.php)
+  ⎿  Added 24 lines
+      61      }
+      62  
+      63      #[Test]
+      64 +    public function registra_consulta_e_retorna_201(): void    
+      65 +    {                                                          
+      66 +        Http::fake([self::URL_OPENWEATHER => Http::response($th
+         +is->respostaOpenWeather())]);                                  
+      67 +                                                               
+      68 +        $this->postJson('/api/clima?cidade=campinas')          
+      69 +            ->assertCreated()                                  
+      70 +            ->assertJsonPath('atualizado', false)              
+      71 +            ->assertJsonPath('data.cidade', 'Campinas')        
+      72 +            ->assertJsonPath('data.temperatura', 25.5)         
+      73 +            ->assertJsonPath('data.umidade', 60)               
+      74 +            ->assertJsonMissingPath('data.cidade_slug');       
+      75 +                                                               
+      76 +        $this->assertDatabaseHas('consulta_clima', [           
+      77 +            'cidade' => 'Campinas',                            
+      78 +            'cidade_slug' => 'campinas',                       
+      79 +            'descricao' => 'céu limpo',                        
+      80 +        ]);                                                    
+      81 +                                                               
+      82 +        Http::assertSent(fn ($request) => $request['q'] === 'ca
+         +mpinas,BR'                                                     
+      83 +            && $request['units'] === 'metric'                  
+      84 +            && $request['appid'] === 'chave-de-teste');        
+      85 +    }                                                          
+      86 +                                                               
+      87 +    #[Test]                                                    
+      88      public function consulta_repetida_com_mesmos_valores_so_atu
+          aliza_a_data(): void
+      89      {
+      90          Http::fake([self::URL_OPENWEATHER => Http::response($th
+          is->respostaOpenWeather())]);
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O ajuste está feito: o seu projeto agora passa em 57 de 57 testes. Antes eram
+  49 de 56. Fiz três coisas:
+  - adicionei o use Illuminate\Support\Str; ao tests/Feature/ClimaApiTest.php;
+  - restaurei o teste registra_consulta_e_retorna_201 no mesmo arquivo;
+  - rodei php artisan optimize:clear, que limpou o cache de rotas.
+
+  Nada foi commitado.
+
+  Sobre a sua pergunta: o mapeamento funciona para os casos comuns, mas não está
+  totalmente correto, e não consegui confirmá-lo contra a OpenWeather real.
+
+  A documentação oficial lista 55 condições, mas só em inglês. Ela não publica
+  os textos que a API devolve com lang=pt_br, e a sua chave dá 401, então não
+  consegui consultar a API de verdade. As regras foram escritas a partir das
+  traduções que eu espero que a API devolva ("céu limpo", "algumas nuvens",
+  "nuvens dispersas", "chuva leve"…), sem confirmação. Comparando com a lista
+  oficial:
+
+  1. Neve e granizo ficam de fora. Não há regra para os 10 códigos de neve
+     (600–622: "snow", "sleet", "rain and snow"…). Eles caem no ícone padrão
+     (termômetro). É raro no Brasil, mas acontece no Sul.
+  2. Chuva forte pode virar chuva leve. Se a tradução de "heavy intensity rain"
+     (502) ou de "very heavy rain" (503) não contiver exatamente "chuva forte"
+     ou "chuva muito forte", a regra genérica "chuva" captura e mostra o ícone
+     de chuva leve. Não quebra, mas fica impreciso. O mesmo vale para as
+     variações de garoa (300–321) e de trovoada.
+  3. Noite não é tratada. O código 800 à noite mostra o sol. A API indica dia ou
+     noite no campo icon ("01d" ou "01n"), que nós não salvamos.
+  4. Comparar trechos de texto é frágil. Se a OpenWeather mudar uma tradução, o
+     ícone muda em silêncio e nenhum teste avisa.
+
+  Minha recomendação é trocar a descrição pelo código da condição
+  (weather[0].id) e pelo weather[0].icon. São documentados, não dependem de
+  idioma e cobrem as 55 condições e o dia/noite. Isso exige uma coluna nova no
+  banco, que você tinha preferido evitar. Se quiser manter só a descrição, o
+  mínimo é adicionar uma regra de neve e validar os textos reais quando a chave
+  voltar a funcionar, consultando algumas cidades com tempos diferentes.
+
+  Ainda não alterei o mapeamento. Quer que eu atualize o .md com uma dessas duas
+  opções?
+
+  Fontes:
+  - Weather Conditions - OpenWeatherMap
+  - Current weather data
+  - Weather Conditions (versão antiga) - OpenWeatherMap
+
+✻ Cogitated for 1m 9s · done domingo, 20:10
+
+❯ sim faça essa alteração no .md                                                
+
+● Vou seguir a opção que recomendei: identificar a condição pelo código
+  (weather[0].id) e pelo campo icon (01d/01n) da OpenWeather. Para registros
+  antigos, que não têm o código, a descrição continua como reserva. Antes de
+  escrever, confirmo que os nomes de ícone que pretendo usar existem no Material
+  Symbols:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Confirmei que todos os ícones, incluindo weather_snowy, weather_mix, tornado,
+  clear_night e partly_cloudy_night, existem no arquivo oficial de codepoints do
+  Material Symbols. Agora vou seguir para o backend.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os 60 testes passam. O Pint apontou problemas de formatação em dois arquivos;
+  vou ver se vêm do meu trecho ou de partes que já existiam:
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● As diferenças eram só formatação no código existente: linha final faltando no
+  provider e indentação extra no #[Test] em ClimaApiTest, já corrigidas pelo
+  Pint na cópia. Agora vou seguir para o front.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O tsc e o build passaram sem erros. Como não há testes automatizados no front,
+  vou compilar o weatherIcon.ts e testar manualmente as 55 condições oficiais,
+  incluindo variações dia/noite e o fallback por descrição.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O tsc não gerou a saída. Vou ver a mensagem dele:
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● O mapeamento das 55 condições oficiais, dia/noite e reserva por descrição está
+  confirmado sem erros. Agora vou simular a resposta da OpenWeather com código
+  e ícone, testando Jales à noite e uma cidade com neve, e capturar o card
+  resultante.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A captura rodou, mas o comando para encerrar os servidores derrubou o próprio
+  shell de novo. Vou encerrar pelas portas e restaurar o .env:
+
+  Read 2 files, ran 1 shell command (ctrl+o to expand)
+
+● As capturas confirmam o comportamento correto: Jales à noite exibe o card
+  clear_night e Urupema exibe weather_snowy em vez do termômetro anterior. Agora
+  vou atualizar o arquivo .md.
+
+● Bash(S=/tmp/claude-1000/-home-tiago-weatherapp-loopv2/72964788-c93c-4263-84eb-
+      a5fbdd3438fd/scratchpad; cd /home/tiago/weatherapp-loopv2 && cp
+      tarefa-parte2.md $S/tar…)
+  ⎿  blocos alterados:
+        app/DTOs/DadosClima.php
+        app/Providers/Weather/OpenWeatherProvider.php (método mapear)
+     … +9 lines (ctrl+o to expand)
+  ⎿  1 file changed (binary, mode only or too large to show)
+
+● O conjunto de blocos alterados confere com o esperado. Agora vou simular numa
+  cópia do projeto a aplicação do .md (arquivos completos, mapear(), o helper
+  novo e os 3 testes novos) e rodar tudo para validar.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Atualizei o tarefa-parte2.md. Agora o ícone é escolhido pelo código da 
+  condição da OpenWeather (weather[0].id) e pelo ícone dia/noite
+  (weather[0].icon), em vez de trechos da descrição.
+
+  Simulei a atualização numa cópia do seu projeto atual, seguindo o .md: 60 
+  testes passando (eram 57), tsc sem erros e build concluído. O front aplicado é
+  idêntico ao que validei no navegador.
+
+  O que mudou:
+  - Banco: uma migration nova
+    (2026_10_05_000001_add_condicao_to_consulta_clima_table.php) cria as colunas
+    condicao_id e icone. É uma migration separada, então a sua migration de
+    vento continua como está.
+  - Backend:
+    - DadosClima, OpenWeatherProvider::mapear(), o model e o repository passam a
+      salvar o código e o ícone;
+    - numa consulta repetida, esses campos também são atualizados, porque o
+      ícone pode mudar de dia para noite sem o tempo mudar;
+    - a regra de duplicidade não mudou.
+  - Front:
+    - utils/weatherIcon.ts foi reescrito e mapeia as faixas de código: 2xx
+      trovoada, 3xx garoa, 5xx chuva (chuva forte separada), 6xx neve e granizo,
+      7xx neblina/fumaça/poeira, tornado e rajadas, 800 céu limpo e 801–804
+      nuvens;
+    - à noite, céu limpo usa clear_night e poucas nuvens usam
+      partly_cloudy_night, no card escuro do catálogo;
+    - registros antigos, sem código, continuam usando a descrição como reserva,
+      agora com regra de neve.
+  - Textos do .md: há uma seção "Atualização: ícone pelo código da condição" no
+    topo, que lista exatamente o que mudou desde a versão que você já
+    implementou.
+
+  Como validei:
+  - Testei o mapeamento contra as 55 condições oficiais da OpenWeather, mais os
+    casos noturnos e a reserva por descrição: nenhuma divergência.
+  - Conferi no arquivo oficial do Material Symbols que todos os ícones usados
+    existem, incluindo os novos weather_snowy, weather_mix, tornado e
+    partly_cloudy_night.
+  - No navegador, Jales à noite apareceu com a lua no card escuro e Urupema com
+    neve apareceu com o floco. Antes, a neve caía no ícone de termômetro.
+
+  O seu projeto não foi alterado nesta etapa, só o .md. Os textos exatos que a
+  OpenWeather devolve em português continuam sem confirmação, porque a sua chave
+  segue recusada (401). Com o mapeamento por código, isso agora só afeta os
+  registros antigos, que usam a reserva por descrição.
+✻ Worked for 3m 53s · done domingo, 20:14
+
+※ recap: Estamos montando o WeatherApp (API Laravel com front React), e o tarefa-parte2.md agora escolhe o ícone do clima pelo código da condição. Próximo passo: aplicar a seção "Atualização" do guia e rodar php artisan migrate.
+
+❯ Mude mais uma vez o .md vamos usar javascript e não typescript. Não complique 
+  demais as coisas, seja minimalista quando necessário.                         
+
+● Vou converter o front para JavaScript e simplificar. Sai o TypeScript (tipos,
+  tsconfig.json e dependências @types/typescript). Também junto arquivos
+  pequenos que só existiam para separar responsabilidades:
+  - as chamadas de API ficam num único api.js;
+  - o painel do histórico vai para o App;
+  - os mini-cards e o widget de condição vão para o TelemetryCard;
+  - o debounce vai para dentro do autocomplete.
+
+  Corto ainda extras que não estavam no pedido: a navegação por setas no
+  autocomplete e os rótulos extras do gráfico. O comportamento da tela continua
+  o mesmo.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora os componentes, o App e o main:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Encontrei três ajustes necessários: resolver a importação circular movendo
+  EMPTY_FILTERS para HistoryFilters, trocar o botão de recarregar por uma
+  mensagem simples no erro do histórico, e corrigir o card para filtrar
+  consultas pela cidade selecionada. Vou aplicar essas correções agora.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora o teste ponta a ponta. Antes, devolvo São Paulo (com atraso de 3
+  segundos, para testar o Cancelar) à OpenWeather falsa:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Todos os passos passaram nas duas execuções; a quebra na linha "1 card" é só
+  efeito do ícone agora estar dentro do título, não um erro real. Vou confirmar
+  isso visualmente.
+
+  Read 3 files (ctrl+o to expand)
+
+● A tela continua igual à versão anterior no desktop, no autocomplete e no
+  celular. Vou encerrar os servidores, restaurar o .env da cópia e rodar os
+  testes PHP:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os 60 testes PHP passaram. Agora vou reescrever no .md as partes ligadas ao
+  front (resumo, nota de atualização, árvore de componentes, Parte B e toda a
+  Parte C), removendo as menções a TypeScript.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(S=/tmp/claude-1000/-home-tiago-weatherapp-loopv2/72964788-c93c-4263-84eb-
+      a5fbdd3438fd/scratchpad; cd /home/tiago/weatherapp-loopv2 && cp
+      tarefa-parte2.md $S/tar…)
+  ⎿  27:- **Front: reescrito em JavaScript (sem TypeScript) e simplificado.
+     ** Se você já começou a versão em TypeScript, descarte os arquivos `.t
+     s`/`.t
+     2211 tarefa-parte2.md
+  ⎿  1 file changed (binary, mode only or too large to show)
+
+● Restou apenas a menção intencional na nota sobre a troca para JavaScript, e o
+  .md foi reduzido de cerca de 2.900 para 2.211 linhas. Agora vou aplicar o .md
+  numa cópia do projeto atual seguindo a nota de atualização e rodar testes e
+  build.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Atualizei o tarefa-parte2.md: o front agora é JavaScript puro (.js/.jsx), sem
+  TypeScript, e ficou mais enxuto. A tela e o comportamento continuam os mesmos.
+
+  Verificação: apliquei o .md numa cópia do seu projeto atual, seguindo a nota
+  de atualização do topo.
+  - 60 testes PHP passando e npm run build concluído.
+  - O front aplicado é idêntico ao que testei no Chrome. Rodei o roteiro duas
+    vezes, com autocomplete, consulta, aviso de consulta repetida, Cancelar,
+    erro 404, filtros, paginação e celular, e tudo passou sem erros no console.
+
+  O que saiu:
+  - o tsconfig.json, o types/weather.ts e as dependências typescript,
+    @types/react e @types/react-dom. A instalação agora é só react, react-dom e
+    @vitejs/plugin-react;
+  - o passo npx tsc --noEmit do roteiro.
+
+  O que simplifiquei (são 13 arquivos em vez de 26; o .md caiu de cerca de 2.900
+  para 2.211 linhas):
+  - Chamadas de API: ficam num único api.js, em vez de três arquivos.
+  - Painel do histórico e cabeçalho: foram para dentro do App.jsx.
+  - Mini-cards de mínima, média e máxima e widget de condição: foram para dentro
+    do TelemetryCard.jsx.
+  - Debounce: foi para dentro do useAutocomplete.js.
+  - Removido: a navegação por setas no autocomplete (agora a escolha é só com o
+    mouse), os rótulos extras do gráfico (ficaram a linha, os pontos e o "Pico")
+    e a classificação "(Baixa)/(Alta)" da umidade.
+
+  Corrigido durante a revisão:
+  - Havia uma importação circular entre o App e o HistoryFilters.
+  - Ao trocar de cidade, o card mostrava por um instante a curva da cidade
+    anterior.
+
+  Para você: se já tinha começado a versão em TypeScript, descarte os arquivos
+  .ts/.tsx, o tsconfig.json e os pacotes de TypeScript, e siga as Partes B e C
+  de novo. A nota no topo do .md explica isso. O backend do .md não mudou desde
+  a última versão: você ainda precisa aplicar a parte do código da condição
+  (migration nova e os ajustes listados na nota).
+
+✻ Churned for 4m 39s · done domingo, 20:43
+
+※ recap: O objetivo é construir o front-end do WeatherApp em React integrado à sua API, e o `tarefa-parte2.md` já está reescrito em JavaScript, validado e sem TypeScript. Seu próximo passo é aplicar a atualização do código da condição no backend, descrita no topo do `.md`.
+
+❯ Erro ao rodar a migration: Invalid route action: [app].                       
+  <?php                                                                         
+                                                                                
+  use Illuminate\Support\Facades\Route;                                         
+                                                                                
+  Route::get('/', 'app');                                                       
+
+● Vou conferir o routes/web.php do seu projeto e reproduzir o erro:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Reproduzi o erro. Vou confirmar a correção numa cópia, sem mexer no seu
+  projeto:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O problema está no routes/web.php: a rota foi escrita com Route::get em vez de
+  Route::view. A migration em si está certa.
+
+  Route::get('/', 'app');   // seu arquivo hoje
+  Route::view('/', 'app');  // como está no .md
+
+  O segundo argumento de Route::get precisa ser uma ação de controller (por
+  exemplo 'Controller@metodo') ou uma função. A string 'app' não é nenhuma das
+  duas, então o Laravel lança Invalid route action: [app] ao registrar a rota.
+
+  O erro aparece até na migration porque o artisan carrega todos os arquivos de
+  rotas ao iniciar. Por isso qualquer comando (migrate, test, serve…) falha
+  enquanto essa linha estiver assim.
+
+  Route::view('/', 'app') é o atalho do Laravel para "na URL /, mostre a view
+  resources/views/app.blade.php", sem precisar de controller.
+
+  O arquivo corrigido fica assim:
+
+  <?php
+
+  use Illuminate\Support\Facades\Route;
+
+  Route::view('/', 'app');
+
+  Testei numa cópia do seu projeto: com Route::get o erro se repete, e com
+  Route::view o artisan volta a funcionar e lista as migrations normalmente. Não
+  alterei o seu arquivo. Depois de corrigir, é só rodar php artisan migrate de
+  novo.
+
+✻ Sautéed for 18s · done domingo, 21:32
+
+※ recap: Você está implementando a interface React em JavaScript do WeatherApp, seguindo o tarefa-parte2.md, e a migration falhou por um erro na rota. Próximo passo: trocar Route::get('/', 'app') por Route::view('/', 'app') no routes/web.php e rodar php artisan migrate de novo.
+
+❯ npm run dev error                                                             
+  (!) Failed to run dependency scan. Skipping dependency pre-bundling. Error:   
+  failed to resolve rolldownOptions.input value: "resources/js/main.jsx".       
+      at resolvePath (file:///home/tiago/weatherapp-loopv2/node_modules/vite/di 
+  st/node/chunks/node.js:27877:29)                                              
+      at async Promise.all (index 1)                                            
+      at async computeEntries (file:///home/tiago/weatherapp-loopv2/node_module 
+  s/vite/dist/node/chunks/node.js:27881:44)                                     
+      at async scan (file:///home/tiago/weatherapp-loopv2/node_modules/vite/dis 
+  t/node/chunks/node.js:27825:19)                                               
+      at async file:///home/tiago/weatherapp-loopv2/node_modules/vite/dist/node 
+  /chunks/node.js:35613:15                                                      
+                                                                                
+    LARAVEL v13.34.0  plugin v3.2.0                                             
+
+● Vou ver o que existe em resources/js no seu projeto:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Encontrei a causa e mais um problema que vai aparecer logo em seguida. Vou
+  comparar os outros arquivos com os do .md para pegar tudo de uma vez:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Falta conferir o conteúdo do arquivo com o nome errado:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O erro acontece porque o arquivo resources/js/main.jsx não existe. O
+  vite.config.js e a view apontam para ele como ponto de entrada, então o Vite
+  não tem por onde começar.
+
+  Comparei todos os arquivos do front com o .md e só há mais um problema, que
+  apareceria logo depois desse:
+
+  1. Falta criar o resources/js/main.jsx. O conteúdo está no fim da Parte C do
+     .md:
+
+  import { StrictMode } from 'react';
+  import { createRoot } from 'react-dom/client';
+  import { App } from './App';
+
+  createRoot(document.getElementById('app')).render(
+      <StrictMode>
+          <App />
+      </StrictMode>,
+  );
+  2. O TelemetryCard foi salvo com uma crase no fim do nome: TelemetryCard.jsx``
+     em vez de TelemetryCard.jsx. Provavelmente ela veio junto ao copiar o 
+     título do .md. O conteúdo está certo, mas o 
+     App.jsximporta./components/TelemetryCard`, e o Vite não encontraria o
+     arquivo. Para renomear:
+
+  mv 'resources/js/components/TelemetryCard.jsx`'
+  resources/js/components/TelemetryCard.jsx
+
+  Todos os outros arquivos estão idênticos aos do .md: os 14 restantes de
+  resources/js, mais vite.config.js, app.blade.php e app.css. As dependências
+  (react, react-dom e @vitejs/plugin-react) estão instaladas. Depois dessas duas
+  correções, o npm run dev deve subir. Não alterei nada no seu projeto.
+✻ Cogitated for 19s · done domingo, 21:37
+
+※ recap: Você está implementando à mão o front React do WeatherApp, seguindo o tarefa-parte2.md, e o npm run dev falhou. Próximo passo: criar o resources/js/main.jsx e tirar a crase do nome do TelemetryCard.jsx, depois rodar de novo.
+
+❯ http://localhost:5173/                                                        
+  This is the Vite development server that provides Hot Module Replacement for  
+  your Laravel application.                                                     
+                                                                                
+  To access your Laravel application, you will need to run a local development  
+  server.                                                                       
+                                                                                
+  Artisan Serve                                                                 
+  Laravel's local development server powered by PHP's built-in web server.      
+                                                                                
+  Laravel Sail                                                                  
+  A light-weight command-line interface for interacting with Laravel's default  
+  Docker development environment.                                               
+                                                                                
+  Your Laravel application's configured APP_URL is:                             
+  http://localhost:8000                                                         
+                                                                                
+  Want more information on Laravel's Vite integration?                          
+                                                                                
+  Read the docs →                                                               
+  está mostrando a tela do vite ao invés do nosso app                           
+
+● Vou verificar se o servidor do Laravel está rodando:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Isso é o esperado: a porta 5173 é do Vite, que só entrega os arquivos JS e
+  CSS. O app em si é servido pelo Laravel em http://localhost:8000. Conferi
+  aqui, e o Vite está rodando, mas nada responde na porta 8000. Falta subir o
+  servidor do Laravel.
+
+  Mantenha o npm run dev rodando e, em outro terminal, rode:
+
+  php artisan serve
+
+  Depois acesse http://localhost:8000.
+
+  O Laravel renderiza a view app.blade.php, e o @vite(...) dentro dela carrega o
+  React a partir do servidor do Vite, já com hot reload. Por isso os dois
+  precisam estar ligados ao mesmo tempo.
+
+  Se preferir um terminal só, rode npm run build uma vez e depois apenas php 
+  artisan serve. Nesse modo não há hot reload: a cada mudança no front é preciso
+  rodar o build de novo.
+
+✻ Worked for 7s · done domingo, 21:41
+
+※ recap: Você está montando a interface React do WeatherApp integrada à API Laravel, seguindo o tarefa-parte2.md, e o Vite já sobe. Próximo passo: rodar php artisan serve em outro terminal e abrir http://localhost:8000.

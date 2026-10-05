@@ -245,7 +245,7 @@ Os testes usam SQLite em memória e `Http::fake()` para simular o OpenWeatherMap
 - A API não tem autenticação nem limite de requisições próprio.
 
 ## Uso de IA
-link da conversa: 
+link da conversa: [conversa](2026-10-05-export-conversation.txt)
 O desenvolvimento contou com apoio de IA (Claude Code) no planejamento, na revisão do código, na criação de testes e na documentação
 
 O plano do back-end foi registrado em `implementacao.md tarefa-parte1.md` e o do front-end em `tarefa-parte2.md`, com a estrutura de cada arquivo e uma breve descrição. A implementação foi feita manualmente a partir desses planos, com ajustes ao longo do caminho.
