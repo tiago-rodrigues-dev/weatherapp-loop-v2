@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Clima\ConsultaClima;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
@@ -57,6 +58,30 @@ class ClimaApiTest extends TestCase
             'descricao' => 'céu limpo',
             'consultado_em' => $consultadoEm,
         ]);
+    }
+
+    #[Test]
+    public function registra_consulta_e_retorna_201(): void
+    {
+        Http::fake([self::URL_OPENWEATHER => Http::response($this->respostaOpenWeather())]);
+
+        $this->postJson('/api/clima?cidade=campinas')
+            ->assertCreated()
+            ->assertJsonPath('atualizado', false)
+            ->assertJsonPath('data.cidade', 'Campinas')
+            ->assertJsonPath('data.temperatura', 25.5)
+            ->assertJsonPath('data.umidade', 60)
+            ->assertJsonMissingPath('data.cidade_slug');
+
+        $this->assertDatabaseHas('consulta_clima', [
+            'cidade' => 'Campinas',
+            'cidade_slug' => 'campinas',
+            'descricao' => 'céu limpo',
+        ]);
+
+        Http::assertSent(fn ($request) => $request['q'] === 'campinas,BR'
+            && $request['units'] === 'metric'
+            && $request['appid'] === 'chave-de-teste');
     }
 
     #[Test]

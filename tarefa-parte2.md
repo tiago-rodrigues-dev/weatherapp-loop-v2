@@ -3,8 +3,8 @@
 Guia de implementação do front-end do WeatherApp. Cada arquivo aparece com uma breve descrição e o código completo, na ordem sugerida, no mesmo formato do `implementacao.md`.
 
 **Tudo abaixo foi validado** numa cópia do projeto (com os seus namespaces atuais):
-- `php artisan test`: **57 testes / 202 asserções passando**, com ou sem `npm run build`. Antes eram 43; entraram testes de paginação, filtros, cidades e velocidade do vento, e o `ExampleTest` foi trocado por um teste da página inicial.
-- `npx tsc --noEmit` sem erros e `npm run build` concluindo com sucesso.
+- `php artisan test`: **60 testes / 213 asserções passando**, com ou sem `npm run build`. Antes eram 43; entraram testes de paginação, filtros, cidades, velocidade do vento e código da condição, e o `ExampleTest` foi trocado por um teste da página inicial.
+- `npm run build` concluindo com sucesso.
 - Teste ponta a ponta no Chrome headless, com uma OpenWeather falsa local:
   - o autocomplete sugere "Jales, SP";
   - Consultar seleciona o registro novo;
@@ -15,12 +15,27 @@ Guia de implementação do front-end do WeatherApp. Cada arquivo aparece com uma
   - no celular (390 px) não há rolagem horizontal;
   - nenhum erro no console.
 
+## Atualização: ícone pelo código da condição
+
+Se você já implementou a versão anterior deste guia, aplique só isto:
+- **Backend:**
+  - crie a migration `2026_10_05_000001_add_condicao_to_consulta_clima_table.php` (nova) e rode `php artisan migrate`;
+  - atualize `DadosClima`, `OpenWeatherProvider::mapear()`, o model `ConsultaClima` e o `ConsultaClimaRepository` (`criar` e `atualizarDataConsulta`).
+- **Testes:**
+  - no `ClimaServiceTest`, os dois helpers ganharam `condicaoId`/`icone`, e o teste de vento virou `vento_ou_icone_diferentes_nao_geram_novo_registro`;
+  - no `ClimaApiTest`, o helper `respostaOpenWeather()` ganhou `condition_id` e `icon`, e há 3 testes novos no fim: `salva_codigo_da_condicao_e_icone`, `consulta_redundante_atualiza_o_icone_de_dia_para_noite` e `salva_condicao_nula_quando_a_openweather_nao_envia`.
+- **Front: reescrito em JavaScript (sem TypeScript) e simplificado.** Se você já começou a versão em TypeScript, descarte os arquivos `.ts`/`.tsx`, o `tsconfig.json` e as dependências `typescript` e `@types/*`, e siga as Partes B e C de novo. Ficaram menos arquivos:
+  - as chamadas de API ficam num único `api.js`;
+  - o painel do histórico foi para o `App.jsx`;
+  - os mini-cards e o widget de condição foram para o `TelemetryCard.jsx`;
+  - o debounce foi para dentro do `useAutocomplete.js`.
+
 ## Visão geral
 
 ```
-GET  /                                   → view Blade que monta o React (resources/js/main.tsx)
+GET  /                                   → view Blade que monta o React (resources/js/main.jsx)
 GET  /api/municipios?busca=jal           → autocomplete (já existia)
-POST /api/clima?cidade=Jales             → consulta e grava (já existia; agora também salva a velocidade do vento)
+POST /api/clima?cidade=Jales             → consulta e grava (já existia; agora também salva vento, código da condição e ícone)
 GET  /api/clima/historico?cidade=&de=&ate=&page=&per_page=   → histórico PAGINADO e filtrado (mudou)
 GET  /api/clima/cidades                  → cidades já consultadas, para o select do filtro (novo)
 ```
@@ -28,23 +43,28 @@ GET  /api/clima/cidades                  → cidades já consultadas, para o sel
 Telas e componentes:
 
 ```
-App
-├── Header (LogoLoop)
-├── BarraConsulta ── useAutocomplete ── GET /api/municipios
-├── Alerta (erro / aviso)
-└── PainelHistorico
-    ├── FiltrosHistorico ── useCidadesConsultadas ── GET /api/clima/cidades
-    ├── TabelaHistorico + Paginacao ── useHistorico ── GET /api/clima/historico
-    └── CardTelemetria ── useConsultasDaCidade ── GET /api/clima/historico?cidade=X&per_page=50
-        ├── WidgetCondicao (ícone pela descrição)
-        ├── CurvaTemperatura (SVG)
-        └── MiniEstatisticas (mínima / média / máxima)
+App (estado da tela, cabeçalho e painel do histórico)
+├── SearchBar ── useAutocomplete ── GET /api/municipios
+├── Alert (erro / aviso)
+├── HistoryFilters ─────────────── GET /api/clima/cidades
+├── HistoryTable + Pagination ──── GET /api/clima/historico
+└── TelemetryCard ──────────────── GET /api/clima/historico?cidade=X&per_page=50
+    └── TemperatureChart (SVG)
+
+Todas as chamadas ficam em api.js e passam pelo hook useRequest.
 ```
 
 ### Decisões importantes
+- **Idioma do código:** todo o código do front (arquivos, componentes, funções, variáveis e comentários) está em **inglês** e em **JavaScript**. Ficam em português apenas:
+  - os **textos exibidos na tela**;
+  - os **nomes dos campos do JSON** da API (`cidade`, `temperatura`, `sensacao_termica`, `umidade`, `descricao`, `vento_kmh`, `consultado_em`, `nome`, `uf`, `atualizado`, `erro`);
+  - os **parâmetros da query** (`busca`, `cidade`, `de`, `ate`, `per_page`), porque são o contrato com o backend, que continua em português.
+
+  Os termos da reserva por descrição em `utils/weatherIcon.ts` ("chuva", "nublado"…) também ficam em português, porque são comparados com as descrições em pt_br da OpenWeather.
 - **Tabela:** Cidade, Consulta (data/hora), Temp., Sensação, Umidade e Descrição. Sem País, sem Observação e sem chip de status, como você pediu.
-- **Ícone da condição:** escolhido pelo **texto da descrição** (`utils/iconeClima.ts`), seguindo o catálogo de ícones e cores. Descrições desconhecidas usam `device_thermostat`. Não diferencia dia e noite.
-- **Velocidade do vento:** coluna nova e nullable (`vento_kmh`). A OpenWeather manda o vento em m/s (com `units=metric`), e convertemos para km/h (×3,6). A pressão atmosférica **não** é salva nem exibida. A **regra de duplicidade não mudou**: só temperatura, sensação, umidade e descrição contam. Quando o registro é redundante, atualizamos a data/hora **e** o vento. Registros antigos (ou respostas sem vento) ficam com `null`, e a tela mostra "—".
+- **Ícone da condição:** escolhido pelo **código da condição da OpenWeather** (`condicao_id`, campo `weather[0].id`) e pelo **ícone** (`icone`, campo `weather[0].icon`), em `utils/weatherIcon.ts`. O código não depende de idioma e cobre as 55 condições documentadas em [openweathermap.org/weather-conditions](https://openweathermap.org/weather-conditions). O ícone diz se é dia (`01d`) ou noite (`01n`); à noite, céu limpo vira `clear_night` e poucas nuvens viram `partly_cloudy_night`, com o card escuro do catálogo. Registros antigos, sem código, usam a **descrição como reserva**. Códigos desconhecidos usam `device_thermostat`.
+  - **Por que não só a descrição:** a OpenWeather não documenta os textos em pt_br. Mapear por trechos de texto deixava neve sem ícone, podia mostrar chuva forte como chuva leve e não sabia se era noite.
+- **Velocidade do vento:** coluna nova e nullable (`vento_kmh`). A OpenWeather manda o vento em m/s (com `units=metric`), e convertemos para km/h (×3,6). A pressão atmosférica **não** é salva nem exibida. A **regra de duplicidade não mudou**: só temperatura, sensação, umidade e descrição contam. Quando o registro é redundante, atualizamos a data/hora **e** o vento, o código da condição e o ícone. O ícone pode passar de dia para noite sem o tempo mudar. Registros antigos (ou respostas sem vento) ficam com `null`, e a tela mostra "—".
 - **Paginação e filtros na API:** a resposta do histórico agora tem o formato padrão do paginator do Laravel (`data`, `current_page`, `last_page`, `per_page`, `total`, `from`, `to`…). O padrão é 10 por página, com máximo de 50. `de` e `ate` filtram o `consultado_em`, e o `ate` inclui o minuto inteiro (10:17 vai até 10:17:59).
 - **Fuso horário:** o banco guarda em UTC (`config/app.php`). O front converte o `datetime-local` (horário local) para ISO em UTC com `toISOString()`, e a API converte para o fuso da aplicação antes de filtrar. A tabela mostra os horários no fuso do navegador.
 - **Cache versionado:** como o store `database` não suporta tags, cada combinação de filtros tem a sua chave (`clima:historico:v{versao}:...`). Toda gravação incrementa `clima:historico:versao`, o que invalida tudo de uma vez. O cache continua guardando **arrays**, por causa do `serializable_classes => false`.
@@ -59,7 +79,7 @@ App
 
 ---
 
-## Parte A: Backend (velocidade do vento, filtros e paginação)
+## Parte A: Backend (vento, condição, filtros e paginação)
 
 ### `database/migrations/2026_10_04_000001_add_vento_kmh_to_consulta_clima_table.php`
 
@@ -90,9 +110,39 @@ return new class extends Migration
 };
 ```
 
+### `database/migrations/2026_10_05_000001_add_condicao_to_consulta_clima_table.php`
+
+Migration nova: adiciona `condicao_id` (código da condição da OpenWeather, `weather[0].id`, ex.: 800 = céu limpo) e `icone` (`weather[0].icon`, ex.: `01d` de dia e `01n` à noite). As duas são nullable: registros antigos não têm esses dados, e o front usa a descrição como reserva.
+
+```php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('consulta_clima', function (Blueprint $table) {
+            $table->unsignedSmallInteger('condicao_id')->nullable()->after('descricao');
+            $table->string('icone', 4)->nullable()->after('condicao_id');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('consulta_clima', function (Blueprint $table) {
+            $table->dropColumn(['condicao_id', 'icone']);
+        });
+    }
+};
+```
+
 ### `app/DTOs/DadosClima.php`
 
-Ganha `ventoKmh`, **opcional** (com `null` como padrão) para não quebrar quem cria o DTO sem ele. O `igualA()` **não mudou**: o vento não conta para a duplicidade.
+Ganha `ventoKmh`, `condicaoId` e `icone`, todos **opcionais** (com `null` como padrão) para não quebrar quem cria o DTO sem eles. O `igualA()` **não mudou**: esses campos não contam para a duplicidade.
 
 ```php
 <?php
@@ -111,6 +161,8 @@ final readonly class DadosClima
         public int $umidade,
         public string $descricao,
         public ?float $ventoKmh = null,
+        public ?int $condicaoId = null,
+        public ?string $icone = null,
     ) {}
 
     public function cidadeSlug(): string
@@ -130,7 +182,7 @@ final readonly class DadosClima
 
 ### `app/Providers/Weather/OpenWeatherProvider.php (método mapear)`
 
-Substitua só o método `mapear()`, que agora lê `wind.speed` (m/s → km/h). O resto do arquivo continua igual.
+Substitua só o método `mapear()`, que agora lê `wind.speed` (m/s → km/h), `weather[0].id` e `weather[0].icon`. O resto do arquivo continua igual.
 
 ```php
     private function mapear(?array $dados): DadosClima
@@ -146,13 +198,15 @@ Substitua só o método `mapear()`, que agora lê `wind.speed` (m/s → km/h). O
             umidade: (int) $dados['main']['humidity'],
             descricao: $dados['weather'][0]['description'],
             ventoKmh: isset($dados['wind']['speed']) ? round($dados['wind']['speed'] * 3.6, 1) : null,
+            condicaoId: isset($dados['weather'][0]['id']) ? (int) $dados['weather'][0]['id'] : null,
+            icone: $dados['weather'][0]['icon'] ?? null,
         );
     }
 ```
 
 ### `app/Models/Clima/ConsultaClima.php`
 
-Inclui `vento_kmh` no `$fillable` e nos `casts`.
+Inclui `vento_kmh`, `condicao_id` e `icone` no `$fillable`, e os casts de `vento_kmh` e `condicao_id`.
 
 ```php
 <?php
@@ -173,6 +227,8 @@ class ConsultaClima extends Model
         'umidade',
         'descricao',
         'vento_kmh',
+        'condicao_id',
+        'icone',
         'consultado_em',
     ];
 
@@ -185,6 +241,7 @@ class ConsultaClima extends Model
             'sensacao_termica' => 'float',
             'umidade' => 'integer',
             'vento_kmh' => 'float',
+            'condicao_id' => 'integer',
             'consultado_em' => 'datetime',
         ];
     }
@@ -194,8 +251,8 @@ class ConsultaClima extends Model
 ### `app/Repositories/Clima/ConsultaClimaRepository.php`
 
 Mudanças:
-- `criar()` grava o vento;
-- `atualizarDataConsulta()` **ganhou o parâmetro `DadosClima $dados`** para atualizar o vento junto com a data;
+- `criar()` grava o vento, o código da condição e o ícone;
+- `atualizarDataConsulta()` **ganhou o parâmetro `DadosClima $dados`** para atualizar o vento, o código da condição e o ícone junto com a data;
 - `historico()` agora recebe filtros (`cidade_slug`, `de`, `ate`) e devolve um `LengthAwarePaginator`;
 - `cidadesConsultadas()` é novo: lista os nomes distintos, em ordem alfabética.
 
@@ -231,6 +288,8 @@ class ConsultaClimaRepository
             'umidade' => $dados->umidade,
             'descricao' => $dados->descricao,
             'vento_kmh' => $dados->ventoKmh,
+            'condicao_id' => $dados->condicaoId,
+            'icone' => $dados->icone,
             'consultado_em' => $consultadoEm,
         ]);
     }
@@ -239,6 +298,8 @@ class ConsultaClimaRepository
     {
         $consulta->update([
             'vento_kmh' => $dados->ventoKmh,
+            'condicao_id' => $dados->condicaoId,
+            'icone' => $dados->icone,
             'consultado_em' => $consultadoEm,
         ]);
 
@@ -491,8 +552,8 @@ Route::get('/clima/cidades', [ClimaController::class, 'cidades']);
 ### `tests/Unit/ClimaServiceTest.php`
 
 Reescrito para a nova API do service. O repository retorna um `LengthAwarePaginator` montado no próprio teste. Cobre:
-- criar ou só atualizar (com o vento);
-- vento diferente **não** gera registro novo;
+- criar ou só atualizar (com vento, código e ícone);
+- vento ou ícone diferentes **não** geram registro novo;
 - cada combinação de filtros com o seu cache;
 - normalização de slug e de fuso;
 - arrays no cache;
@@ -553,6 +614,8 @@ class ClimaServiceTest extends TestCase
             'umidade' => 60,
             'descricao' => 'céu limpo',
             'ventoKmh' => 14.4,
+            'condicaoId' => 800,
+            'icone' => '01d',
         ], $sobrescrever));
     }
 
@@ -567,6 +630,8 @@ class ClimaServiceTest extends TestCase
             'umidade' => 60,
             'descricao' => 'céu limpo',
             'vento_kmh' => 10.8,
+            'condicao_id' => 800,
+            'icone' => '01d',
             'consultado_em' => '2026-10-03 11:00:00',
         ], $sobrescrever));
     }
@@ -615,12 +680,12 @@ class ClimaServiceTest extends TestCase
     }
 
     #[Test]
-    public function vento_diferente_nao_gera_novo_registro(): void
+    public function vento_ou_icone_diferentes_nao_geram_novo_registro(): void
     {
         $existente = $this->consultaExistente();
 
         $this->provider->shouldReceive('buscarClimaAtual')
-            ->andReturn($this->dados(['ventoKmh' => 30.0]));
+            ->andReturn($this->dados(['ventoKmh' => 30.0, 'icone' => '01n']));
         $this->repository->shouldReceive('ultimaPorCidade')->andReturn($existente);
         $this->repository->shouldReceive('atualizarDataConsulta')->once()->andReturn($existente);
         $this->repository->shouldNotReceive('criar');
@@ -768,7 +833,7 @@ class ClimaServiceTest extends TestCase
 
 ### `tests/Feature/ClimaApiTest.php (helpers)`
 
-**1)** Adicione `use Illuminate\Support\Str;` aos imports e **substitua** o método `respostaOpenWeather()` por estes dois métodos. Agora a resposta falsa tem `wind`, e há um helper para criar registros direto no banco.
+**1)** Adicione `use Illuminate\Support\Str;` aos imports e **substitua** o método `respostaOpenWeather()` por estes dois métodos. Agora a resposta falsa tem `wind` e o `id`/`icon` da condição, e há um helper para criar registros direto no banco.
 
 ```php
     private function respostaOpenWeather(array $sobrescrever = []): array
@@ -780,6 +845,8 @@ class ClimaServiceTest extends TestCase
             'humidity' => 60,
             'wind_speed' => 4.0,
             'description' => 'céu limpo',
+            'condition_id' => 800,
+            'icon' => '01d',
         ], $sobrescrever);
 
         return [
@@ -790,7 +857,11 @@ class ClimaServiceTest extends TestCase
                 'humidity' => $dados['humidity'],
             ],
             'wind' => ['speed' => $dados['wind_speed']],
-            'weather' => [['description' => $dados['description']]],
+            'weather' => [[
+                'id' => $dados['condition_id'],
+                'description' => $dados['description'],
+                'icon' => $dados['icon'],
+            ]],
         ];
     }
 
@@ -812,6 +883,7 @@ class ClimaServiceTest extends TestCase
 
 **2)** Adicione estes testes ao final da classe. Eles cobrem:
 - velocidade do vento salva, atualizada e nula quando a OpenWeather não envia;
+- código da condição e ícone salvos, o ícone atualizado de dia para noite numa consulta repetida, e os dois nulos quando a OpenWeather não envia;
 - paginação (padrão de 10 por página);
 - filtro por período, com o minuto final incluído e a conversão de fuso;
 - filtro de cidade combinado com período;
@@ -987,6 +1059,50 @@ class ClimaServiceTest extends TestCase
 
         $this->getJson('/api/clima/cidades')->assertExactJson(['data' => ['Jales']]);
     }
+
+    #[Test]
+    public function salva_codigo_da_condicao_e_icone(): void
+    {
+        Http::fake([self::URL_OPENWEATHER => Http::response($this->respostaOpenWeather([
+            'condition_id' => 502,
+            'description' => 'chuva forte',
+            'icon' => '10n',
+        ]))]);
+
+        $this->postJson('/api/clima?cidade=Campinas')
+            ->assertCreated()
+            ->assertJsonPath('data.condicao_id', 502)
+            ->assertJsonPath('data.icone', '10n');
+    }
+
+    #[Test]
+    public function consulta_redundante_atualiza_o_icone_de_dia_para_noite(): void
+    {
+        Http::fakeSequence(self::URL_OPENWEATHER)
+            ->push($this->respostaOpenWeather(['icon' => '01d']))
+            ->push($this->respostaOpenWeather(['icon' => '01n']));
+
+        $this->postJson('/api/clima?cidade=Campinas')->assertCreated();
+        $this->postJson('/api/clima?cidade=Campinas')
+            ->assertOk()
+            ->assertJsonPath('atualizado', true)
+            ->assertJsonPath('data.icone', '01n');
+
+        $this->assertDatabaseCount('consulta_clima', 1);
+    }
+
+    #[Test]
+    public function salva_condicao_nula_quando_a_openweather_nao_envia(): void
+    {
+        $resposta = $this->respostaOpenWeather();
+        unset($resposta['weather'][0]['id'], $resposta['weather'][0]['icon']);
+        Http::fake([self::URL_OPENWEATHER => Http::response($resposta)]);
+
+        $this->postJson('/api/clima?cidade=Campinas')
+            ->assertCreated()
+            ->assertJsonPath('data.condicao_id', null)
+            ->assertJsonPath('data.icone', null);
+    }
 ```
 
 ## Parte B: Setup do front-end
@@ -995,16 +1111,16 @@ class ClimaServiceTest extends TestCase
 
 ```bash
 npm install react react-dom
-npm install -D @vitejs/plugin-react typescript @types/react @types/react-dom
+npm install -D @vitejs/plugin-react
 ```
 
-Na validação foram instaladas `react`/`react-dom` 19.3, `@vitejs/plugin-react` 6.1, `typescript` 7.0 e `@types/react`/`@types/react-dom` 19.3.
+Na validação foram instaladas `react`/`react-dom` 19.3 e `@vitejs/plugin-react` 6.1.
 
-Apague o `resources/js/app.js`, que estava vazio. O ponto de entrada passa a ser `resources/js/main.tsx`.
+Apague o `resources/js/app.js`, que estava vazio. O ponto de entrada passa a ser `resources/js/main.jsx`.
 
 ### `vite.config.js`
 
-Adiciona o plugin do React e troca a entrada para `main.tsx`. Saem o `bunny`/Instrument Sans, porque as fontes do design (Inter, Plus Jakarta Sans e Material Symbols) vêm do Google Fonts na view.
+Adiciona o plugin do React e troca a entrada para `main.jsx`. Saem o `bunny`/Instrument Sans, porque as fontes do design (Inter, Plus Jakarta Sans e Material Symbols) vêm do Google Fonts na view.
 
 ```js
 import { defineConfig } from 'vite';
@@ -1015,7 +1131,7 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
     plugins: [
         laravel({
-            input: ['resources/css/app.css', 'resources/js/main.tsx'],
+            input: ['resources/css/app.css', 'resources/js/main.jsx'],
             refresh: true,
         }),
         react(),
@@ -1029,33 +1145,9 @@ export default defineConfig({
 });
 ```
 
-### `tsconfig.json`
-
-Configuração do TypeScript para checagem de tipos (`npx tsc --noEmit`). Quem compila é o Vite; o `tsc` só verifica.
-
-```json
-{
-    "compilerOptions": {
-        "target": "ES2022",
-        "lib": ["ES2022", "DOM", "DOM.Iterable"],
-        "module": "ESNext",
-        "moduleResolution": "bundler",
-        "jsx": "react-jsx",
-        "strict": true,
-        "noEmit": true,
-        "skipLibCheck": true,
-        "isolatedModules": true,
-        "noUnusedLocals": true,
-        "noUnusedParameters": true,
-        "types": ["vite/client"]
-    },
-    "include": ["resources/js"]
-}
-```
-
 ### `resources/css/app.css`
 
-Tailwind v4: os tokens do `DESIGN.md` e da tela viram classes (`bg-primary`, `text-primary-dark`, `border-border-tint`, `font-display`…). As regras de `.material-symbols-outlined` controlam o ícone vazado ou preenchido (`preenchido`), como no catálogo.
+Tailwind v4: os tokens do `DESIGN.md` e da tela viram classes (`bg-primary`, `text-primary-dark`, `border-border-tint`, `font-display`…). As regras de `.material-symbols-outlined` controlam o ícone vazado ou preenchido (classe `filled`), como no catálogo.
 
 ```css
 @import 'tailwindcss';
@@ -1093,7 +1185,7 @@ Tailwind v4: os tokens do `DESIGN.md` e da tela viram classes (`bg-primary`, `te
     user-select: none;
 }
 
-.material-symbols-outlined.preenchido {
+.material-symbols-outlined.filled {
     font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24;
 }
 ```
@@ -1116,7 +1208,7 @@ Página única que carrega as fontes e monta o React no `#app`. O `@viteReactRef
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" rel="stylesheet">
 
     @viteReactRefresh
-    @vite(['resources/css/app.css', 'resources/js/main.tsx'])
+    @vite(['resources/css/app.css', 'resources/js/main.jsx'])
 </head>
 <body class="bg-surface-page text-on-surface font-sans antialiased">
     <div id="app"></div>
@@ -1165,598 +1257,251 @@ class PaginaInicialTest extends TestCase
 
 ## Parte C: Código React (`resources/js/`)
 
-### Tipos e acesso à API
+São 13 arquivos. Ordem sugerida: API e utilitários, hooks, componentes e, por fim, `App.jsx` e `main.jsx`.
 
-### `resources/js/types/clima.ts`
+### API e utilitários
 
-Tipos que espelham o JSON da API. `FiltrosHistorico` guarda os valores **como digitados** na tela, e a conversão para ISO acontece na hora da requisição.
+### `resources/js/api.js`
 
-```ts
-export interface ConsultaClima {
-    id: number;
-    cidade: string;
-    temperatura: number;
-    sensacao_termica: number;
-    umidade: number;
-    descricao: string;
-    vento_kmh: number | null;
-    consultado_em: string;
+Todas as chamadas à API:
+- `request()` monta a query string (ignorando valores vazios), envia `Accept: application/json` e aceita um `AbortSignal`;
+- em caso de falha, lança `ApiError` com uma mensagem amigável: o `erro` da API (404, 502, 503), a primeira mensagem de validação (422) ou falha de rede;
+- `fetchHistory()` recebe nomes em inglês (`city`, `from`, `to`, `perPage`) e os traduz para os parâmetros da API (`cidade`, `de`, `ate`, `per_page`).
+
+```js
+export class ApiError extends Error {}
+
+export function isAbortError(error) {
+    return error?.name === 'AbortError';
 }
 
-export interface Municipio {
-    id: number;
-    nome: string;
-    uf: string;
-}
-
-export interface Paginado<T> {
-    data: T[];
-    current_page: number;
-    last_page: number;
-    per_page: number;
-    total: number;
-    from: number | null;
-    to: number | null;
-}
-
-export interface ResultadoRegistro {
-    data: ConsultaClima;
-    atualizado: boolean;
-}
-
-/** Valores dos filtros como digitados na tela. `de` e `ate` vêm do <input type="datetime-local">. */
-export interface FiltrosHistorico {
-    cidade: string;
-    de: string;
-    ate: string;
-}
-
-export const FILTROS_VAZIOS: FiltrosHistorico = { cidade: '', de: '', ate: '' };
-```
-
-### `resources/js/api/client.ts`
-
-`fetch` central:
-- monta a query string, ignorando valores vazios;
-- envia `Accept: application/json`, para o Laravel responder erros em JSON;
-- aceita `AbortSignal`;
-- transforma erros em `ApiError` com mensagem amigável: `erro` (404, 502, 503), a primeira mensagem de validação (422) ou falha de rede.
-
-```ts
-export class ApiError extends Error {
-    constructor(
-        message: string,
-        public readonly status: number,
-    ) {
-        super(message);
-        this.name = 'ApiError';
-    }
-}
-
-type Query = Record<string, string | number | null | undefined>;
-
-interface OpcoesRequisicao {
-    query?: Query;
-    signal?: AbortSignal;
-}
-
-export function foiCancelada(erro: unknown): boolean {
-    return erro instanceof DOMException && erro.name === 'AbortError';
-}
-
-function montarUrl(caminho: string, query: Query = {}): string {
-    const parametros = new URLSearchParams();
-
-    for (const [chave, valor] of Object.entries(query)) {
-        if (valor !== null && valor !== undefined && valor !== '') {
-            parametros.set(chave, String(valor));
-        }
-    }
-
-    const queryString = parametros.toString();
-
-    return `/api${caminho}${queryString ? `?${queryString}` : ''}`;
-}
-
-async function extrairMensagemDeErro(resposta: Response): Promise<string> {
+async function errorMessage(response) {
     try {
-        const corpo = await resposta.json();
+        const body = await response.json();
 
-        if (typeof corpo?.erro === 'string') {
-            return corpo.erro;
-        }
-
-        if (corpo?.errors) {
-            const [primeiraLista] = Object.values(corpo.errors as Record<string, string[]>);
-
-            if (primeiraLista?.[0]) {
-                return primeiraLista[0];
-            }
-        }
-
-        if (typeof corpo?.message === 'string' && corpo.message !== '') {
-            return corpo.message;
-        }
+        if (body.erro) return body.erro;
+        if (body.errors) return Object.values(body.errors)[0][0];
+        if (body.message) return body.message;
     } catch {
-        // A resposta de erro não veio em JSON; usa a mensagem genérica abaixo.
+        // Response body is not JSON: use the generic message below.
     }
 
-    return `Erro inesperado no servidor (HTTP ${resposta.status}).`;
+    return `Erro inesperado no servidor (HTTP ${response.status}).`;
 }
 
-export async function requisitar<T>(metodo: 'GET' | 'POST', caminho: string, opcoes: OpcoesRequisicao = {}): Promise<T> {
-    let resposta: Response;
+async function request(method, path, params = {}, signal) {
+    const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''));
+    let response;
 
     try {
-        resposta = await fetch(montarUrl(caminho, opcoes.query), {
-            method: metodo,
-            headers: { Accept: 'application/json' },
-            signal: opcoes.signal,
-        });
-    } catch (erro) {
-        if (foiCancelada(erro)) {
-            throw erro;
-        }
-
-        throw new ApiError('Não foi possível conectar ao servidor. Verifique sua conexão.', 0);
+        response = await fetch(`/api${path}?${query}`, { method, headers: { Accept: 'application/json' }, signal });
+    } catch (error) {
+        if (isAbortError(error)) throw error;
+        throw new ApiError('Não foi possível conectar ao servidor. Verifique sua conexão.');
     }
 
-    if (!resposta.ok) {
-        throw new ApiError(await extrairMensagemDeErro(resposta), resposta.status);
-    }
+    if (!response.ok) throw new ApiError(await errorMessage(response));
 
-    return (await resposta.json()) as T;
+    return response.json();
+}
+
+export async function searchMunicipalities(term, signal) {
+    return (await request('GET', '/municipios', { busca: term }, signal)).data;
+}
+
+export function registerWeatherQuery(city, signal) {
+    return request('POST', '/clima', { cidade: city }, signal);
+}
+
+/** `from` and `to` must be ISO 8601 strings (see toIso in utils/format.js). */
+export function fetchHistory({ city, from, to, page, perPage }, signal) {
+    return request('GET', '/clima/historico', { cidade: city, de: from, ate: to, page, per_page: perPage }, signal);
+}
+
+export async function fetchQueriedCities(signal) {
+    return (await request('GET', '/clima/cidades', {}, signal)).data;
 }
 ```
 
-### `resources/js/api/municipios.ts`
+### `resources/js/utils/format.js`
 
-Autocomplete: `GET /api/municipios?busca=`.
+Formatação pt-BR (`23,1 °C`, `28/09/2026`, `10:17`) e `toIso()`, que converte o valor do `datetime-local` (horário local) para ISO em UTC, o formato que a API espera.
 
-```ts
-import type { Municipio } from '../types/clima';
-import { requisitar } from './client';
+```js
+const decimal = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
-export async function buscarMunicipios(termo: string, signal?: AbortSignal): Promise<Municipio[]> {
-    const resposta = await requisitar<{ data: Municipio[] }>('GET', '/municipios', {
-        query: { busca: termo },
-        signal,
-    });
+export const formatNumber = (value) => decimal.format(value);
+export const formatTemperature = (value) => `${formatNumber(value)} °C`;
+export const formatDate = (iso) => new Date(iso).toLocaleDateString('pt-BR');
+export const formatTime = (iso) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+export const formatDayMonthTime = (iso) => `${new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} ${formatTime(iso)}`;
+export const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
-    return resposta.data;
-}
+/** Converts an <input type="datetime-local"> value (browser local time) to ISO 8601 in UTC. */
+export const toIso = (value) => (value ? new Date(value).toISOString() : undefined);
 ```
 
-### `resources/js/api/clima.ts`
+### `resources/js/utils/weatherIcon.js`
 
-Consulta (POST), histórico paginado e cidades consultadas.
+`getWeatherVisual(record)` devolve ícone e cores conforme o catálogo:
+1. **Com `condicao_id`:** usa as faixas de código da OpenWeather (2xx trovoada, 3xx garoa, 5xx chuva, 6xx neve, 7xx atmosfera, 800 céu limpo, 801–804 nuvens). O `icone` terminado em `n` ativa as variantes noturnas.
+2. **Sem `condicao_id`** (registros antigos): reserva pelos termos da descrição em pt_br.
 
-```ts
-import type { ConsultaClima, Paginado, ResultadoRegistro } from '../types/clima';
-import { requisitar } from './client';
+Foi conferido com as 55 condições oficiais, sem divergências.
 
-export interface ParametrosHistorico {
-    cidade?: string;
-    /** Data/hora em ISO 8601 (com fuso), ex.: 2026-09-28T13:17:00.000Z */
-    de?: string;
-    ate?: string;
-    page?: number;
-    per_page?: number;
+```js
+const visual = (icon, color, background, border, labelColor = 'text-slate-700') => ({ icon, color, background, border, labelColor });
+
+const THUNDERSTORM = visual('thunderstorm', 'text-indigo-600', 'bg-indigo-50', 'border-indigo-200');
+const HEAVY_RAIN = visual('rainy_heavy', 'text-primary-dark', 'bg-blue-100', 'border-blue-200');
+const RAIN = visual('rainy', 'text-blue-500', 'bg-blue-50', 'border-blue-200');
+const SNOW = visual('weather_snowy', 'text-sky-500', 'bg-sky-50', 'border-sky-200');
+const SLEET = visual('weather_mix', 'text-sky-600', 'bg-sky-50', 'border-sky-200');
+const FOG = visual('foggy', 'text-slate-600', 'bg-slate-100', 'border-slate-200');
+const WIND = visual('air', 'text-teal-600', 'bg-teal-50', 'border-teal-200');
+const TORNADO = visual('tornado', 'text-teal-700', 'bg-teal-50', 'border-teal-200');
+const CLEAR_DAY = visual('wb_sunny', 'text-amber-500', 'bg-amber-50', 'border-amber-200');
+const CLEAR_NIGHT = visual('clear_night', 'text-amber-300', 'bg-slate-900', 'border-slate-800', 'text-white');
+const FEW_CLOUDS = visual('filter_drama', 'text-amber-600', 'bg-amber-50', 'border-amber-200');
+const PARTLY_CLOUDY = visual('partly_cloudy_day', 'text-sky-500', 'bg-sky-50', 'border-sky-200');
+const CLOUDY_NIGHT = visual('partly_cloudy_night', 'text-amber-300', 'bg-slate-900', 'border-slate-800', 'text-white');
+const CLOUDY = visual('cloud', 'text-slate-500', 'bg-slate-100', 'border-slate-200');
+const UNKNOWN = visual('device_thermostat', 'text-primary', 'bg-white', 'border-border-tint');
+
+/** OpenWeather condition codes: https://openweathermap.org/weather-conditions */
+function fromCode(code, night) {
+    if (code < 300) return THUNDERSTORM;
+    if (code < 400) return RAIN; // drizzle
+    if (code === 511) return SLEET; // freezing rain
+    if ([502, 503, 504, 522].includes(code)) return HEAVY_RAIN;
+    if (code < 600) return RAIN;
+    if (code >= 611 && code <= 616) return SLEET;
+    if (code < 700) return SNOW;
+    if (code === 771) return WIND;
+    if (code === 781) return TORNADO;
+    if (code < 800) return FOG;
+    if (code === 800) return night ? CLEAR_NIGHT : CLEAR_DAY;
+    if (code === 801) return night ? CLOUDY_NIGHT : FEW_CLOUDS;
+    if (code === 802) return night ? CLOUDY_NIGHT : PARTLY_CLOUDY;
+    if (code <= 804) return CLOUDY;
+    return UNKNOWN;
 }
 
-export function registrarConsulta(cidade: string, signal?: AbortSignal): Promise<ResultadoRegistro> {
-    return requisitar<ResultadoRegistro>('POST', '/clima', { query: { cidade }, signal });
-}
-
-export function buscarHistorico(parametros: ParametrosHistorico, signal?: AbortSignal): Promise<Paginado<ConsultaClima>> {
-    return requisitar<Paginado<ConsultaClima>>('GET', '/clima/historico', {
-        query: { ...parametros },
-        signal,
-    });
-}
-
-export async function buscarCidadesConsultadas(signal?: AbortSignal): Promise<string[]> {
-    const resposta = await requisitar<{ data: string[] }>('GET', '/clima/cidades', { signal });
-
-    return resposta.data;
-}
-```
-
-### Utilitários
-
-### `resources/js/utils/formatadores.ts`
-
-Formatação pt-BR:
-- `23,1 °C`;
-- `28/09/2026` e `10:17`;
-- conversão `datetime-local` → ISO em UTC;
-- classificação da umidade: abaixo de 40%, "(Baixa)"; acima de 70%, "(Alta)". Os limites ficam em constantes, se quiser ajustar.
-
-```ts
-const numero = (casas: number) =>
-    new Intl.NumberFormat('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
-
-export function formatarNumero(valor: number, casas = 1): string {
-    return numero(casas).format(valor);
-}
-
-export function formatarTemperatura(valor: number): string {
-    return `${formatarNumero(valor)} °C`;
-}
-
-export function formatarData(iso: string): string {
-    return new Date(iso).toLocaleDateString('pt-BR');
-}
-
-export function formatarHora(iso: string): string {
-    return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-}
-
-export function formatarDiaMesHora(iso: string): string {
-    const data = new Date(iso);
-
-    return `${data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} ${formatarHora(iso)}`;
-}
-
-/** Converte o valor de um <input type="datetime-local"> (horário local do navegador) para ISO 8601 em UTC. */
-export function localParaIso(valor: string): string | undefined {
-    return valor === '' ? undefined : new Date(valor).toISOString();
-}
-
-export function capitalizar(texto: string): string {
-    return texto.charAt(0).toLocaleUpperCase('pt-BR') + texto.slice(1);
-}
-
-export const LIMITE_UMIDADE_BAIXA = 40;
-export const LIMITE_UMIDADE_ALTA = 70;
-
-export function classificarUmidade(umidade: number): { rotulo: string; classe: string } | null {
-    if (umidade < LIMITE_UMIDADE_BAIXA) {
-        return { rotulo: 'Baixa', classe: 'text-amber-600' };
-    }
-
-    if (umidade > LIMITE_UMIDADE_ALTA) {
-        return { rotulo: 'Alta', classe: 'text-blue-600' };
-    }
-
-    return null;
-}
-```
-
-### `resources/js/utils/iconeClima.ts`
-
-Mapeia a descrição da OpenWeather (pt_br) para ícone, cor e fundo, conforme o catálogo. A **ordem das regras importa**: "chuva forte" antes de "chuva", "parcialmente nublado" antes de "nublado".
-
-```ts
-export interface VisualClima {
-    icone: string;
-    preenchido: boolean;
-    corIcone: string;
-    fundo: string;
-    borda: string;
-}
-
-interface Regra {
-    termos: string[];
-    visual: VisualClima;
-}
-
-/**
- * Ordem importa: a primeira regra cujo termo aparecer na descrição vence.
- * Por isso "chuva forte" vem antes de "chuva" e "parcialmente nublado" antes de "nublado".
- * As descrições são as da OpenWeather com lang=pt_br, comparadas sem acento e em minúsculas.
- */
-const REGRAS: Regra[] = [
-    {
-        termos: ['trovoada', 'tempestade', 'raio'],
-        visual: { icone: 'thunderstorm', preenchido: true, corIcone: 'text-indigo-600', fundo: 'bg-indigo-50', borda: 'border-indigo-200' },
-    },
-    {
-        termos: ['chuva forte', 'chuva muito forte', 'chuva extrema', 'chuva intensa', 'aguaceiro'],
-        visual: { icone: 'rainy_heavy', preenchido: true, corIcone: 'text-primary-dark', fundo: 'bg-blue-100', borda: 'border-blue-200' },
-    },
-    {
-        termos: ['chuva', 'garoa', 'chuvisco'],
-        visual: { icone: 'rainy', preenchido: true, corIcone: 'text-blue-500', fundo: 'bg-blue-50', borda: 'border-blue-200' },
-    },
-    {
-        termos: ['nevoa', 'neblina', 'nevoeiro', 'bruma', 'fumaca', 'poeira', 'areia', 'cinza'],
-        visual: { icone: 'foggy', preenchido: false, corIcone: 'text-slate-600', fundo: 'bg-slate-100', borda: 'border-slate-200' },
-    },
-    {
-        termos: ['vento', 'rajada', 'ventania', 'tornado'],
-        visual: { icone: 'air', preenchido: false, corIcone: 'text-teal-600', fundo: 'bg-teal-50', borda: 'border-teal-200' },
-    },
-    {
-        termos: ['algumas nuvens', 'poucas nuvens'],
-        visual: { icone: 'filter_drama', preenchido: true, corIcone: 'text-amber-600', fundo: 'bg-amber-50', borda: 'border-amber-200' },
-    },
-    {
-        termos: ['nuvens dispersas', 'parcialmente nublado'],
-        visual: { icone: 'partly_cloudy_day', preenchido: true, corIcone: 'text-sky-500', fundo: 'bg-sky-50', borda: 'border-sky-200' },
-    },
-    {
-        termos: ['nublado', 'encoberto', 'nuvens'],
-        visual: { icone: 'cloud', preenchido: true, corIcone: 'text-slate-500', fundo: 'bg-slate-100', borda: 'border-slate-200' },
-    },
-    {
-        termos: ['ceu limpo', 'limpo', 'ensolarado', 'sol'],
-        visual: { icone: 'wb_sunny', preenchido: true, corIcone: 'text-amber-500', fundo: 'bg-amber-50', borda: 'border-amber-200' },
-    },
+/** Fallback for old records without `condicao_id`. First matching rule wins, so order matters. */
+const DESCRIPTION_RULES = [
+    [['trovoada', 'tempestade'], THUNDERSTORM],
+    [['neve', 'granizo'], SNOW],
+    [['chuva forte', 'chuva muito forte', 'chuva extrema', 'intensidade pesada'], HEAVY_RAIN],
+    [['chuva', 'garoa', 'chuvisco'], RAIN],
+    [['nevoa', 'neblina', 'nevoeiro', 'fumaca', 'poeira', 'areia', 'cinza'], FOG],
+    [['algumas nuvens'], FEW_CLOUDS],
+    [['nuvens dispersas'], PARTLY_CLOUDY],
+    [['nublado', 'nuvens'], CLOUDY],
+    [['limpo'], CLEAR_DAY],
 ];
 
-const VISUAL_PADRAO: VisualClima = {
-    icone: 'device_thermostat',
-    preenchido: false,
-    corIcone: 'text-primary',
-    fundo: 'bg-white',
-    borda: 'border-border-tint',
-};
+function fromDescription(description) {
+    const text = description.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const rule = DESCRIPTION_RULES.find(([terms]) => terms.some((term) => text.includes(term)));
 
-function normalizar(texto: string): string {
-    return texto
-        .normalize('NFD')
-        .replace(/[̀-ͯ]/g, '')
-        .toLowerCase();
+    return rule ? rule[1] : UNKNOWN;
 }
 
-export function visualDoClima(descricao: string): VisualClima {
-    const texto = normalizar(descricao);
-    const regra = REGRAS.find(({ termos }) => termos.some((termo) => texto.includes(termo)));
+export function getWeatherVisual(record) {
+    if (record.condicao_id) return fromCode(record.condicao_id, record.icone?.endsWith('n'));
 
-    return regra?.visual ?? VISUAL_PADRAO;
-}
-```
-
-### `resources/js/utils/estatisticas.ts`
-
-Mínima, média e máxima das consultas, mais a ordenação cronológica para a curva. A API devolve do mais recente para o mais antigo.
-
-```ts
-import type { ConsultaClima } from '../types/clima';
-
-export interface EstatisticasTemperatura {
-    minima: ConsultaClima;
-    maxima: ConsultaClima;
-    media: number;
-    quantidade: number;
-}
-
-export function calcularEstatisticas(consultas: ConsultaClima[]): EstatisticasTemperatura | null {
-    if (consultas.length === 0) {
-        return null;
-    }
-
-    let minima = consultas[0];
-    let maxima = consultas[0];
-    let soma = 0;
-
-    for (const consulta of consultas) {
-        if (consulta.temperatura < minima.temperatura) {
-            minima = consulta;
-        }
-
-        if (consulta.temperatura > maxima.temperatura) {
-            maxima = consulta;
-        }
-
-        soma += consulta.temperatura;
-    }
-
-    return { minima, maxima, media: soma / consultas.length, quantidade: consultas.length };
-}
-
-/** A API devolve do mais recente para o mais antigo; o gráfico precisa da ordem cronológica. */
-export function emOrdemCronologica(consultas: ConsultaClima[]): ConsultaClima[] {
-    return [...consultas].sort(
-        (a, b) => new Date(a.consultado_em).getTime() - new Date(b.consultado_em).getTime() || a.id - b.id,
-    );
+    return fromDescription(record.descricao);
 }
 ```
 
 ### Hooks
 
-### `resources/js/hooks/useDebounce.ts`
+### `resources/js/hooks/useRequest.js`
 
-Atrasa um valor, para não chamar a API a cada tecla.
+Hook base de todas as buscas: refaz a requisição quando as dependências mudam, **cancela a anterior** (evita que uma resposta velha sobrescreva a nova) e mantém os dados antigos enquanto carrega, para a tabela não piscar ao paginar.
 
-```ts
+```js
 import { useEffect, useState } from 'react';
-
-export function useDebounce<T>(valor: T, atrasoMs = 300): T {
-    const [valorAtrasado, setValorAtrasado] = useState(valor);
-
-    useEffect(() => {
-        const temporizador = window.setTimeout(() => setValorAtrasado(valor), atrasoMs);
-
-        return () => window.clearTimeout(temporizador);
-    }, [valor, atrasoMs]);
-
-    return valorAtrasado;
-}
-```
-
-### `resources/js/hooks/useRequisicao.ts`
-
-Hook base: busca quando as dependências mudam, **cancela a requisição anterior** (evita resposta velha sobrescrevendo a nova) e mantém os dados antigos enquanto carrega, para a tabela não piscar ao paginar.
-
-```ts
-import { type DependencyList, useEffect, useState } from 'react';
-import { foiCancelada } from '../api/client';
-
-export interface EstadoRequisicao<T> {
-    dados: T | null;
-    carregando: boolean;
-    erro: string | null;
-}
+import { isAbortError } from '../api';
 
 /**
- * Executa uma requisição sempre que as dependências mudam e cancela a anterior.
- * Os dados antigos são mantidos durante o carregamento (evita a tabela "piscar" ao paginar).
- * Passe `null` em `executar` para não buscar nada.
+ * Runs `run(signal)` whenever `dependencies` change, aborting the previous request.
+ * Keeps the previous data while loading. Pass `null` to skip the request.
  */
-export function useRequisicao<T>(
-    executar: ((signal: AbortSignal) => Promise<T>) | null,
-    dependencias: DependencyList,
-): EstadoRequisicao<T> {
-    const [estado, setEstado] = useState<EstadoRequisicao<T>>({
-        dados: null,
-        carregando: executar !== null,
-        erro: null,
-    });
+export function useRequest(run, dependencies) {
+    const [state, setState] = useState({ data: null, loading: run !== null, error: null });
 
     useEffect(() => {
-        if (executar === null) {
-            setEstado({ dados: null, carregando: false, erro: null });
-
+        if (run === null) {
+            setState({ data: null, loading: false, error: null });
             return;
         }
 
-        const controle = new AbortController();
-        setEstado((atual) => ({ ...atual, carregando: true, erro: null }));
+        const controller = new AbortController();
+        setState((current) => ({ ...current, loading: true, error: null }));
 
-        executar(controle.signal)
-            .then((dados) => setEstado({ dados, carregando: false, erro: null }))
-            .catch((erro: unknown) => {
-                if (foiCancelada(erro)) {
-                    return;
-                }
-
-                setEstado((atual) => ({
-                    ...atual,
-                    carregando: false,
-                    erro: erro instanceof Error ? erro.message : 'Erro inesperado.',
-                }));
+        run(controller.signal)
+            .then((data) => setState({ data, loading: false, error: null }))
+            .catch((error) => {
+                if (!isAbortError(error)) setState((current) => ({ ...current, loading: false, error: error.message }));
             });
 
-        return () => controle.abort();
-    }, dependencias);
+        return () => controller.abort();
+    }, dependencies);
 
-    return estado;
+    return state;
 }
 ```
 
-### `resources/js/hooks/useAutocomplete.ts`
+### `resources/js/hooks/useAutocomplete.js`
 
-Sugestões de municípios com debounce de 300 ms e mínimo de 2 caracteres.
+Sugestões de municípios: espera 300 ms depois da última tecla (debounce) e só busca a partir de 2 caracteres.
 
-```ts
-import { buscarMunicipios } from '../api/municipios';
-import type { Municipio } from '../types/clima';
-import { useDebounce } from './useDebounce';
-import { useRequisicao } from './useRequisicao';
+```js
+import { useEffect, useState } from 'react';
+import { searchMunicipalities } from '../api';
+import { useRequest } from './useRequest';
 
-export const MINIMO_CARACTERES_BUSCA = 2;
+export const MIN_SEARCH_LENGTH = 2;
 
-export function useAutocomplete(termo: string, ativo: boolean): { sugestoes: Municipio[]; carregando: boolean } {
-    const termoAtrasado = useDebounce(termo.trim(), 300);
-    const deveBuscar = ativo && termoAtrasado.length >= MINIMO_CARACTERES_BUSCA;
+export function useAutocomplete(text, enabled) {
+    const [term, setTerm] = useState('');
 
-    const { dados, carregando } = useRequisicao(
-        deveBuscar ? (signal) => buscarMunicipios(termoAtrasado, signal) : null,
-        [termoAtrasado, deveBuscar],
-    );
+    useEffect(() => {
+        const timer = setTimeout(() => setTerm(text.trim()), 300);
+        return () => clearTimeout(timer);
+    }, [text]);
 
-    return { sugestoes: deveBuscar ? (dados ?? []) : [], carregando: deveBuscar && carregando };
-}
-```
+    const shouldSearch = enabled && term.length >= MIN_SEARCH_LENGTH;
+    const { data, loading } = useRequest(shouldSearch ? (signal) => searchMunicipalities(term, signal) : null, [term, shouldSearch]);
 
-### `resources/js/hooks/useHistorico.ts`
-
-Três hooks:
-- `useHistorico`: a página da tabela;
-- `useConsultasDaCidade`: até 50 consultas da cidade selecionada, para o card;
-- `useCidadesConsultadas`: as opções do select.
-
-O parâmetro `versao` é um contador: incrementá-lo força uma nova busca (Recarregar ou depois de uma consulta).
-
-```ts
-import { buscarCidadesConsultadas, buscarHistorico } from '../api/clima';
-import type { ConsultaClima, FiltrosHistorico } from '../types/clima';
-import { localParaIso } from '../utils/formatadores';
-import { useRequisicao } from './useRequisicao';
-
-export const POR_PAGINA = 10;
-export const MAXIMO_CONSULTAS_NO_CARD = 50;
-
-/** `versao` é um contador: incrementá-lo força uma nova busca (botão Recarregar, nova consulta). */
-export function useHistorico(filtros: FiltrosHistorico, pagina: number, versao: number) {
-    return useRequisicao(
-        (signal) =>
-            buscarHistorico(
-                {
-                    cidade: filtros.cidade,
-                    de: localParaIso(filtros.de),
-                    ate: localParaIso(filtros.ate),
-                    page: pagina,
-                    per_page: POR_PAGINA,
-                },
-                signal,
-            ),
-        [filtros, pagina, versao],
-    );
-}
-
-/** Consultas da cidade selecionada (respeitando o período filtrado), usadas na curva e nas estatísticas do card. */
-export function useConsultasDaCidade(cidade: string | null, filtros: FiltrosHistorico, versao: number) {
-    const { dados, carregando } = useRequisicao<ConsultaClima[]>(
-        cidade === null
-            ? null
-            : async (signal) => {
-                  const pagina = await buscarHistorico(
-                      {
-                          cidade,
-                          de: localParaIso(filtros.de),
-                          ate: localParaIso(filtros.ate),
-                          per_page: MAXIMO_CONSULTAS_NO_CARD,
-                      },
-                      signal,
-                  );
-
-                  return pagina.data;
-              },
-        [cidade, filtros.de, filtros.ate, versao],
-    );
-
-    return { consultas: dados ?? [], carregando };
-}
-
-export function useCidadesConsultadas(versao: number): string[] {
-    const { dados } = useRequisicao((signal) => buscarCidadesConsultadas(signal), [versao]);
-
-    return dados ?? [];
+    return { suggestions: shouldSearch ? (data ?? []) : [], loading: shouldSearch && loading };
 }
 ```
 
 ### Componentes
 
-### `resources/js/components/Icone.tsx`
+### `resources/js/components/Icon.jsx`
 
-Atalho para os ícones do Material Symbols, com a variante preenchida.
+Atalho para os ícones do Material Symbols (`filled` usa a variante preenchida).
 
-```tsx
-interface IconeProps {
-    nome: string;
-    className?: string;
-    preenchido?: boolean;
-}
-
-/** Ícone do Material Symbols Outlined (a fonte é carregada em resources/views/app.blade.php). */
-export function Icone({ nome, className = '', preenchido = false }: IconeProps) {
+```jsx
+/** Material Symbols Outlined icon (font loaded in resources/views/app.blade.php). */
+export function Icon({ name, className = '', filled = false }) {
     return (
-        <span aria-hidden="true" className={`material-symbols-outlined ${preenchido ? 'preenchido' : ''} ${className}`}>
-            {nome}
+        <span aria-hidden="true" className={`material-symbols-outlined ${filled ? 'filled' : ''} ${className}`}>
+            {name}
         </span>
     );
 }
 ```
 
-### `resources/js/components/LogoLoop.tsx`
+### `resources/js/components/LoopLogo.jsx`
 
 Logotipo da Loop Sistemas, copiado do SVG da tela de referência. As classes `.st0`–`.st8` viraram `fill` direto em cada forma.
 
-```tsx
-export function LogoLoop({ className = '' }: { className?: string }) {
+```jsx
+export function LoopLogo({ className = '' }) {
     return (
         <svg className={className} viewBox="0 0 695.8 347.3" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Loop Sistemas">
             <polygon fill="#00A1DA" points="242.5,72.9 268.7,46.7 268.7,231.7 242.5,231.7 " />
@@ -1773,196 +1518,103 @@ export function LogoLoop({ className = '' }: { className?: string }) {
 }
 ```
 
-### `resources/js/components/Header.tsx`
-
-Cabeçalho branco com o logo centralizado.
-
-```tsx
-import { LogoLoop } from './LogoLoop';
-
-export function Header() {
-    return (
-        <header className="w-full bg-white border-b border-border-strong py-4 shadow-sm flex justify-center">
-            <div className="flex flex-col items-center gap-1.5">
-                <LogoLoop className="h-10 w-auto" />
-                <span className="text-xs text-text-muted font-medium tracking-wide">Consulta meteorológica</span>
-            </div>
-        </header>
-    );
-}
-```
-
-### `resources/js/components/Alerta.tsx`
+### `resources/js/components/Alert.jsx`
 
 Banner de erro (vermelho) ou aviso (azul), com botão de fechar.
 
-```tsx
-import { Icone } from './Icone';
+```jsx
+import { Icon } from './Icon';
 
-interface AlertaProps {
-    tipo: 'erro' | 'info';
-    mensagem: string;
-    aoFechar: () => void;
-}
-
-const ESTILOS = {
-    erro: { caixa: 'bg-rose-50 border-rose-200 text-rose-800', icone: 'error', corIcone: 'text-rose-600' },
-    info: { caixa: 'bg-sky-50 border-sky-200 text-sky-800', icone: 'info', corIcone: 'text-sky-600' },
+const STYLES = {
+    error: { box: 'bg-rose-50 border-rose-200 text-rose-800', icon: 'error' },
+    info: { box: 'bg-sky-50 border-sky-200 text-sky-800', icon: 'info' },
 };
 
-export function Alerta({ tipo, mensagem, aoFechar }: AlertaProps) {
-    const estilo = ESTILOS[tipo];
+export function Alert({ type, message, onClose }) {
+    const style = STYLES[type];
 
     return (
-        <div role={tipo === 'erro' ? 'alert' : 'status'} className={`flex items-start gap-2 rounded-lg border px-4 py-3 text-sm ${estilo.caixa}`}>
-            <Icone nome={estilo.icone} className={`text-[20px] ${estilo.corIcone}`} />
-            <p className="flex-1 font-medium">{mensagem}</p>
-            <button type="button" onClick={aoFechar} className="cursor-pointer opacity-70 hover:opacity-100" aria-label="Fechar aviso">
-                <Icone nome="close" className="text-[18px]" />
+        <div role="alert" className={`flex items-start gap-2 rounded-lg border px-4 py-3 text-sm ${style.box}`}>
+            <Icon name={style.icon} className="text-[20px]" />
+            <p className="flex-1 font-medium">{message}</p>
+            <button type="button" onClick={onClose} className="cursor-pointer opacity-70 hover:opacity-100" aria-label="Fechar aviso">
+                <Icon name="close" className="text-[18px]" />
             </button>
         </div>
     );
 }
 ```
 
-### `resources/js/components/BarraConsulta.tsx`
+### `resources/js/components/SearchBar.jsx`
 
-Campo de busca com autocomplete (combobox acessível, com setas ↑/↓, Enter e Esc) e os botões Limpar, Consultar e Cancelar.
-- Escolher uma sugestão preenche "Jales, SP", mas só "Jales" é enviado.
-- O `onMouseDown` com `preventDefault` na sugestão evita que o `onBlur` do input feche a lista antes do clique.
+Campo de busca com autocomplete e os botões Limpar, Consultar e Cancelar. Escolher uma sugestão preenche "Jales, SP", mas só "Jales" é enviado.
 
-```tsx
-import { type FormEvent, type KeyboardEvent, useId, useState } from 'react';
-import { MINIMO_CARACTERES_BUSCA, useAutocomplete } from '../hooks/useAutocomplete';
-import type { Municipio } from '../types/clima';
-import { Icone } from './Icone';
+```jsx
+import { useState } from 'react';
+import { MIN_SEARCH_LENGTH, useAutocomplete } from '../hooks/useAutocomplete';
+import { Icon } from './Icon';
 
-interface BarraConsultaProps {
-    consultando: boolean;
-    aoConsultar: (cidade: string) => void;
-    aoCancelar: () => void;
-}
+export function SearchBar({ searching, onSearch, onCancel }) {
+    const [text, setText] = useState('');
+    const [listOpen, setListOpen] = useState(false);
+    const { suggestions, loading } = useAutocomplete(text, listOpen);
 
-/** "Jales, SP" → "Jales". A API recebe só o nome da cidade. */
-function extrairNomeDaCidade(texto: string): string {
-    return texto.split(',')[0].trim();
-}
+    // "Jales, SP" → "Jales": the API only receives the city name.
+    const city = text.split(',')[0].trim();
+    const showList = listOpen && text.trim().length >= MIN_SEARCH_LENGTH;
 
-export function BarraConsulta({ consultando, aoConsultar, aoCancelar }: BarraConsultaProps) {
-    const idLista = useId();
-    const [texto, setTexto] = useState('');
-    const [listaAberta, setListaAberta] = useState(false);
-    const [indiceAtivo, setIndiceAtivo] = useState(-1);
-
-    const { sugestoes, carregando } = useAutocomplete(texto, listaAberta);
-    const mostrarLista = listaAberta && texto.trim().length >= MINIMO_CARACTERES_BUSCA;
-    const cidade = extrairNomeDaCidade(texto);
-
-    function escolher(municipio: Municipio) {
-        setTexto(`${municipio.nome}, ${municipio.uf}`);
-        setListaAberta(false);
-        setIndiceAtivo(-1);
-    }
-
-    function enviar(evento: FormEvent) {
-        evento.preventDefault();
-
-        if (cidade.length >= MINIMO_CARACTERES_BUSCA && !consultando) {
-            setListaAberta(false);
-            aoConsultar(cidade);
-        }
-    }
-
-    function limpar() {
-        setTexto('');
-        setListaAberta(false);
-        setIndiceAtivo(-1);
-    }
-
-    function navegarComTeclado(evento: KeyboardEvent<HTMLInputElement>) {
-        if (!mostrarLista || sugestoes.length === 0) {
-            return;
-        }
-
-        if (evento.key === 'ArrowDown') {
-            evento.preventDefault();
-            setIndiceAtivo((indice) => (indice + 1) % sugestoes.length);
-        } else if (evento.key === 'ArrowUp') {
-            evento.preventDefault();
-            setIndiceAtivo((indice) => (indice <= 0 ? sugestoes.length - 1 : indice - 1));
-        } else if (evento.key === 'Enter' && indiceAtivo >= 0) {
-            evento.preventDefault();
-            escolher(sugestoes[indiceAtivo]);
-        } else if (evento.key === 'Escape') {
-            setListaAberta(false);
-        }
+    function submit(event) {
+        event.preventDefault();
+        setListOpen(false);
+        onSearch(city);
     }
 
     return (
-        <form onSubmit={enviar} className="bg-white rounded-lg border border-border-strong p-5 shadow-sm">
-            <div className="flex flex-col md:flex-row items-center gap-3 w-full">
+        <form onSubmit={submit} className="bg-white rounded-lg border border-border-strong p-5 shadow-sm">
+            <div className="flex flex-col md:flex-row items-center gap-3">
                 <div className="relative flex-1 w-full">
-                    <div className="flex items-center bg-surface-tint border border-border-tint rounded-lg px-3.5 py-2 shadow-inner focus-within:border-primary focus-within:ring-3 focus-within:ring-brand-accent/20">
-                        <Icone nome="search" className="text-primary text-[18px] mr-2" />
+                    <div className="flex items-center bg-surface-tint border border-border-tint rounded-lg px-3.5 py-2 shadow-inner focus-within:border-primary">
+                        <Icon name="search" className="text-primary text-[18px] mr-2" />
                         <input
                             type="text"
-                            value={texto}
-                            onChange={(evento) => {
-                                setTexto(evento.target.value);
-                                setListaAberta(true);
-                                setIndiceAtivo(-1);
+                            value={text}
+                            onChange={(event) => {
+                                setText(event.target.value);
+                                setListOpen(true);
                             }}
-                            onFocus={() => setListaAberta(true)}
-                            onBlur={() => setListaAberta(false)}
-                            onKeyDown={navegarComTeclado}
+                            onBlur={() => setListOpen(false)}
                             placeholder="Digite a cidade, ex.: Jales, SP"
                             aria-label="Cidade"
-                            role="combobox"
-                            aria-expanded={mostrarLista}
-                            aria-controls={idLista}
-                            aria-autocomplete="list"
                             autoComplete="off"
-                            className="bg-transparent border-0 p-0 text-sm font-medium text-slate-800 focus:outline-none w-full placeholder:text-slate-400"
+                            className="bg-transparent text-sm font-medium text-slate-800 focus:outline-none w-full placeholder:text-slate-400"
                         />
-                        {texto !== '' && (
-                            <button
-                                type="button"
-                                onClick={limpar}
-                                className="flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-700 uppercase tracking-wider ml-2 cursor-pointer"
-                            >
-                                <Icone nome="cancel" className="text-[15px]" />
+                        {text && (
+                            <button type="button" onClick={() => setText('')} className="flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-700 uppercase tracking-wider ml-2 cursor-pointer">
+                                <Icon name="cancel" className="text-[15px]" />
                                 Limpar
                             </button>
                         )}
                     </div>
 
-                    {mostrarLista && (
-                        <ul
-                            id={idLista}
-                            role="listbox"
-                            className="absolute z-20 mt-1 w-full max-h-72 overflow-auto bg-white border border-border-strong rounded-lg shadow-[0_12px_24px_-4px_rgba(15,23,42,0.1),0_4px_6px_-2px_rgba(15,23,42,0.05)] py-1"
-                        >
-                            {carregando && sugestoes.length === 0 && <li className="px-3.5 py-2 text-xs text-text-muted">Buscando cidades…</li>}
-                            {!carregando && sugestoes.length === 0 && <li className="px-3.5 py-2 text-xs text-text-muted">Nenhuma cidade encontrada.</li>}
-                            {sugestoes.map((municipio, indice) => (
+                    {showList && (
+                        <ul className="absolute z-20 mt-1 w-full max-h-72 overflow-auto bg-white border border-border-strong rounded-lg shadow-lg py-1">
+                            {suggestions.length === 0 && <li className="px-3.5 py-2 text-xs text-text-muted">{loading ? 'Buscando cidades…' : 'Nenhuma cidade encontrada.'}</li>}
+                            {suggestions.map((municipality) => (
                                 <li
-                                    key={municipio.id}
-                                    role="option"
-                                    aria-selected={indice === indiceAtivo}
-                                    onMouseDown={(evento) => {
-                                        evento.preventDefault();
-                                        escolher(municipio);
+                                    key={municipality.id}
+                                    // onMouseDown (not onClick) runs before the input's onBlur closes the list.
+                                    onMouseDown={(event) => {
+                                        event.preventDefault();
+                                        setText(`${municipality.nome}, ${municipality.uf}`);
+                                        setListOpen(false);
                                     }}
-                                    onMouseEnter={() => setIndiceAtivo(indice)}
-                                    className={`flex items-center justify-between px-3.5 py-2 text-sm cursor-pointer ${
-                                        indice === indiceAtivo ? 'bg-surface-tint text-primary-dark' : 'text-slate-700'
-                                    }`}
+                                    className="flex items-center justify-between px-3.5 py-2 text-sm text-slate-700 cursor-pointer hover:bg-surface-tint"
                                 >
                                     <span className="flex items-center gap-2">
-                                        <Icone nome="location_on" className="text-[16px] text-primary" />
-                                        {municipio.nome}
+                                        <Icon name="location_on" className="text-[16px] text-primary" />
+                                        {municipality.nome}
                                     </span>
-                                    <span className="px-1.5 py-0.5 bg-[#E1EEF8] text-primary-dark font-bold text-[10px] rounded">{municipio.uf}</span>
+                                    <span className="px-1.5 py-0.5 bg-[#E1EEF8] text-primary-dark font-bold text-[10px] rounded">{municipality.uf}</span>
                                 </li>
                             ))}
                         </ul>
@@ -1972,19 +1624,19 @@ export function BarraConsulta({ consultando, aoConsultar, aoCancelar }: BarraCon
                 <div className="flex items-center gap-2 w-full md:w-auto">
                     <button
                         type="submit"
-                        disabled={consultando || cidade.length < MINIMO_CARACTERES_BUSCA}
-                        className="flex-1 md:flex-initial inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-primary-strong hover:bg-primary-hover active:bg-brand-deep text-white text-sm font-semibold rounded-lg shadow-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={searching || city.length < MIN_SEARCH_LENGTH}
+                        className="flex-1 md:flex-initial inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-primary-strong hover:bg-primary-hover text-white text-sm font-semibold rounded-lg shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                        <Icone nome={consultando ? 'progress_activity' : 'my_location'} className={`text-[18px] ${consultando ? 'animate-spin' : ''}`} />
-                        {consultando ? 'Consultando…' : 'Consultar'}
+                        <Icon name={searching ? 'progress_activity' : 'my_location'} className={`text-[18px] ${searching ? 'animate-spin' : ''}`} />
+                        {searching ? 'Consultando…' : 'Consultar'}
                     </button>
                     <button
                         type="button"
-                        onClick={aoCancelar}
-                        disabled={!consultando}
-                        className="flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={onCancel}
+                        disabled={!searching}
+                        className="flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                        <Icone nome="disabled_by_default" className="text-[17px] text-slate-500" />
+                        <Icon name="disabled_by_default" className="text-[17px] text-slate-500" />
                         Cancelar
                     </button>
                 </div>
@@ -1994,91 +1646,63 @@ export function BarraConsulta({ consultando, aoConsultar, aoCancelar }: BarraCon
 }
 ```
 
-### `resources/js/components/FiltrosHistorico.tsx`
+### `resources/js/components/HistoryFilters.jsx`
 
-Select de cidade e campos De/Até (`datetime-local`). Os campos editam um **rascunho**; nada é buscado até clicar em Filtrar. Limpar zera e aplica na hora.
+Select de cidade e campos De/Até. Os campos editam um rascunho, e nada é buscado até clicar em Filtrar. Limpar zera e aplica na hora. Também exporta `EMPTY_FILTERS`.
 
-```tsx
-import { type FormEvent, useEffect, useState } from 'react';
-import { FILTROS_VAZIOS, type FiltrosHistorico as Filtros } from '../types/clima';
-import { Icone } from './Icone';
+```jsx
+import { useEffect, useState } from 'react';
+import { Icon } from './Icon';
 
-interface FiltrosHistoricoProps {
-    cidades: string[];
-    filtrosAplicados: Filtros;
-    aoFiltrar: (filtros: Filtros) => void;
-}
+export const EMPTY_FILTERS = { city: '', from: '', to: '' };
 
-const classeCampo = 'flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5';
+const fieldClass = 'flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5';
+const inputClass = 'text-xs tabular-nums text-slate-800 outline-none bg-transparent';
 
-export function FiltrosHistorico({ cidades, filtrosAplicados, aoFiltrar }: FiltrosHistoricoProps) {
-    const [rascunho, setRascunho] = useState<Filtros>(filtrosAplicados);
+/** Edits a draft; nothing is fetched until "Filtrar" is clicked. */
+export function HistoryFilters({ cities, filters, onFilter }) {
+    const [draft, setDraft] = useState(filters);
 
-    useEffect(() => setRascunho(filtrosAplicados), [filtrosAplicados]);
+    useEffect(() => setDraft(filters), [filters]);
 
-    function alterar(campo: keyof Filtros, valor: string) {
-        setRascunho((atual) => ({ ...atual, [campo]: valor }));
-    }
-
-    function filtrar(evento: FormEvent) {
-        evento.preventDefault();
-        aoFiltrar(rascunho);
-    }
+    const change = (field) => (event) => setDraft({ ...draft, [field]: event.target.value });
 
     return (
-        <form onSubmit={filtrar} className="flex flex-wrap items-center gap-2.5 text-xs text-slate-700 py-1.5">
-            <label className={classeCampo}>
+        <form
+            onSubmit={(event) => {
+                event.preventDefault();
+                onFilter(draft);
+            }}
+            className="flex flex-wrap items-center gap-2.5 text-xs text-slate-700 py-1.5"
+        >
+            <label className={fieldClass}>
                 <span className="font-medium text-slate-600">Cidade:</span>
-                <select
-                    value={rascunho.cidade}
-                    onChange={(evento) => alterar('cidade', evento.target.value)}
-                    className="bg-transparent border-0 p-0 text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer pr-1"
-                >
+                <select value={draft.city} onChange={change('city')} className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer">
                     <option value="">Todas</option>
-                    {cidades.map((cidade) => (
-                        <option key={cidade} value={cidade}>
-                            {cidade}
-                        </option>
+                    {cities.map((city) => (
+                        <option key={city}>{city}</option>
                     ))}
                 </select>
             </label>
 
-            <label className={classeCampo}>
+            <label className={fieldClass}>
                 <span className="font-medium text-slate-600">De:</span>
-                <Icone nome="calendar_today" className="text-slate-500 text-[14px]" />
-                <input
-                    type="datetime-local"
-                    value={rascunho.de}
-                    onChange={(evento) => alterar('de', evento.target.value)}
-                    className="text-xs tabular-nums text-slate-800 outline-none border-0 p-0 bg-transparent"
-                />
+                <Icon name="calendar_today" className="text-slate-500 text-[14px]" />
+                <input type="datetime-local" value={draft.from} onChange={change('from')} className={inputClass} />
             </label>
 
-            <label className={classeCampo}>
+            <label className={fieldClass}>
                 <span className="font-medium text-slate-600">Até:</span>
-                <Icone nome="schedule" className="text-slate-500 text-[14px]" />
-                <input
-                    type="datetime-local"
-                    value={rascunho.ate}
-                    min={rascunho.de || undefined}
-                    onChange={(evento) => alterar('ate', evento.target.value)}
-                    className="text-xs tabular-nums text-slate-800 outline-none border-0 p-0 bg-transparent"
-                />
+                <Icon name="schedule" className="text-slate-500 text-[14px]" />
+                <input type="datetime-local" value={draft.to} min={draft.from} onChange={change('to')} className={inputClass} />
             </label>
 
             <div className="flex items-center gap-2 ml-auto">
-                <button
-                    type="submit"
-                    className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-primary-strong hover:bg-primary-hover text-white rounded text-xs font-semibold transition-colors cursor-pointer"
-                >
-                    <Icone nome="filter_alt" className="text-[14px]" />
+                <button type="submit" className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-primary-strong hover:bg-primary-hover text-white rounded text-xs font-semibold cursor-pointer">
+                    <Icon name="filter_alt" className="text-[14px]" />
                     Filtrar
                 </button>
-                <button
-                    type="button"
-                    onClick={() => aoFiltrar(FILTROS_VAZIOS)}
-                    className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded text-xs font-medium transition-colors cursor-pointer"
-                >
+                <button type="button" onClick={() => onFilter(EMPTY_FILTERS)} className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded text-xs font-medium cursor-pointer">
                     Limpar
                 </button>
             </div>
@@ -2087,83 +1711,64 @@ export function FiltrosHistorico({ cidades, filtrosAplicados, aoFiltrar }: Filtr
 }
 ```
 
-### `resources/js/components/TabelaHistorico.tsx`
+### `resources/js/components/HistoryTable.jsx`
 
-Tabela com a linha selecionada em azul corporativo e o ícone `radio_button_checked`. Clicar em uma linha a seleciona e atualiza o card.
+Tabela do histórico. A linha selecionada fica em azul, com o ícone `radio_button_checked`.
 
-```tsx
-import type { ConsultaClima } from '../types/clima';
-import { capitalizar, formatarData, formatarHora, formatarTemperatura } from '../utils/formatadores';
-import { Icone } from './Icone';
+```jsx
+import { capitalize, formatDate, formatTemperature, formatTime } from '../utils/format';
+import { Icon } from './Icon';
 
-interface TabelaHistoricoProps {
-    consultas: ConsultaClima[];
-    selecionadaId: number | null;
-    carregando: boolean;
-    aoSelecionar: (consulta: ConsultaClima) => void;
-}
+const COLUMNS = ['CIDADE', 'CONSULTA', 'TEMP.', 'SENSAÇÃO', 'UMIDADE', 'DESCRIÇÃO'];
+const RIGHT_ALIGNED = ['TEMP.', 'SENSAÇÃO', 'UMIDADE'];
 
-const COLUNAS = [
-    { titulo: 'CIDADE', alinhamento: 'text-left' },
-    { titulo: 'CONSULTA', alinhamento: 'text-left' },
-    { titulo: 'TEMP.', alinhamento: 'text-right' },
-    { titulo: 'SENSAÇÃO', alinhamento: 'text-right' },
-    { titulo: 'UMIDADE', alinhamento: 'text-right' },
-    { titulo: 'DESCRIÇÃO', alinhamento: 'text-left' },
-];
-
-export function TabelaHistorico({ consultas, selecionadaId, carregando, aoSelecionar }: TabelaHistoricoProps) {
+export function HistoryTable({ records, selectedId, loading, onSelect }) {
     return (
-        <div className={`overflow-x-auto transition-opacity ${carregando ? 'opacity-60' : ''}`} aria-busy={carregando}>
-            <table className="w-full text-left text-xs border-collapse">
+        <div className={`overflow-x-auto ${loading ? 'opacity-60' : ''}`}>
+            <table className="w-full text-xs">
                 <thead>
-                    <tr className="bg-surface-tint text-[#476077] border-b border-border-tint font-bold select-none text-[11px] tracking-wider">
-                        {COLUNAS.map(({ titulo, alinhamento }) => (
-                            <th key={titulo} scope="col" className={`py-2 px-2 first:px-3 border-r last:border-r-0 border-border-tint ${alinhamento}`}>
-                                {titulo}
+                    <tr className="bg-surface-tint text-[#476077] border-b border-border-tint text-[11px] tracking-wider">
+                        {COLUMNS.map((title) => (
+                            <th key={title} className={`py-2 px-3 border-r last:border-r-0 border-border-tint ${RIGHT_ALIGNED.includes(title) ? 'text-right' : 'text-left'}`}>
+                                {title}
                             </th>
                         ))}
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E6EEF5]">
-                    {consultas.length === 0 && (
+                    {records.length === 0 && (
                         <tr>
-                            <td colSpan={COLUNAS.length} className="py-8 text-center text-text-muted">
-                                {carregando ? 'Carregando histórico…' : 'Nenhuma consulta encontrada para os filtros selecionados.'}
+                            <td colSpan={COLUMNS.length} className="py-8 text-center text-text-muted">
+                                {loading ? 'Carregando histórico…' : 'Nenhuma consulta encontrada para os filtros selecionados.'}
                             </td>
                         </tr>
                     )}
 
-                    {consultas.map((consulta) => {
-                        const selecionada = consulta.id === selecionadaId;
-                        const celula = `py-2 px-2 whitespace-nowrap border-r ${selecionada ? 'border-primary' : 'border-[#E6EEF5]'}`;
+                    {records.map((record) => {
+                        const selected = record.id === selectedId;
+                        const muted = selected ? 'text-sky-100' : 'text-slate-600';
 
                         return (
                             <tr
-                                key={consulta.id}
-                                onClick={() => aoSelecionar(consulta)}
-                                aria-selected={selecionada}
-                                className={`cursor-pointer ${selecionada ? 'bg-primary-dark text-white font-medium shadow-sm' : 'bg-white hover:bg-slate-50'}`}
+                                key={record.id}
+                                onClick={() => onSelect(record)}
+                                className={`cursor-pointer whitespace-nowrap ${selected ? 'bg-primary-dark text-white' : 'bg-white hover:bg-slate-50 text-slate-800'}`}
                             >
-                                <td className={`${celula} px-3 font-semibold ${selecionada ? 'font-bold' : 'text-slate-800'}`}>
+                                <td className="py-2 px-3 font-semibold">
                                     <span className="flex items-center gap-1.5">
-                                        {selecionada && <Icone nome="radio_button_checked" className="text-[17px] text-[#7DD0FF]" />}
-                                        {consulta.cidade}
+                                        {selected && <Icon name="radio_button_checked" className="text-[17px] text-[#7DD0FF]" />}
+                                        {record.cidade}
                                     </span>
                                 </td>
-                                <td className={`${celula} tabular-nums text-[11px] ${selecionada ? 'text-sky-100' : 'text-slate-700'}`}>
-                                    {formatarData(consulta.consultado_em)}
+                                <td className={`py-2 px-3 tabular-nums text-[11px] ${muted}`}>
+                                    {formatDate(record.consultado_em)}
                                     <br />
-                                    <span className={selecionada ? 'text-sky-200' : 'text-slate-500'}>{formatarHora(consulta.consultado_em)}</span>
+                                    {formatTime(record.consultado_em)}
                                 </td>
-                                <td className={`${celula} text-right tabular-nums font-semibold ${selecionada ? 'text-white text-[13px] font-bold' : 'text-slate-800'}`}>
-                                    {formatarTemperatura(consulta.temperatura)}
-                                </td>
-                                <td className={`${celula} text-right tabular-nums ${selecionada ? 'text-sky-100' : 'text-slate-600'}`}>
-                                    {formatarTemperatura(consulta.sensacao_termica)}
-                                </td>
-                                <td className={`${celula} text-right tabular-nums ${selecionada ? 'text-sky-100' : 'text-slate-600'}`}>{consulta.umidade}%</td>
-                                <td className={`py-2 px-2 ${selecionada ? 'text-sky-100' : 'text-slate-600'}`}>{capitalizar(consulta.descricao)}</td>
+                                <td className="py-2 px-3 text-right tabular-nums font-semibold">{formatTemperature(record.temperatura)}</td>
+                                <td className={`py-2 px-3 text-right tabular-nums ${muted}`}>{formatTemperature(record.sensacao_termica)}</td>
+                                <td className={`py-2 px-3 text-right tabular-nums ${muted}`}>{record.umidade}%</td>
+                                <td className={`py-2 px-3 ${muted}`}>{capitalize(record.descricao)}</td>
                             </tr>
                         );
                     })}
@@ -2174,76 +1779,43 @@ export function TabelaHistorico({ consultas, selecionadaId, carregando, aoSeleci
 }
 ```
 
-### `resources/js/components/Paginacao.tsx`
+### `resources/js/components/Pagination.jsx`
 
-"Mostrando X a Y de Z registros", Anterior/Próxima e até 5 números de página centralizados na atual.
+"Mostrando X a Y de Z registros", Anterior/Próxima e os números de página próximos da atual.
 
-```tsx
-import type { Paginado } from '../types/clima';
-import { Icone } from './Icone';
+```jsx
+import { Icon } from './Icon';
 
-interface PaginacaoProps {
-    pagina: Pick<Paginado<unknown>, 'current_page' | 'last_page' | 'total' | 'from' | 'to'>;
-    aoMudarPagina: (pagina: number) => void;
-}
+const buttonClass =
+    'inline-flex items-center gap-0.5 px-2 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-50 cursor-pointer disabled:text-slate-400 disabled:cursor-not-allowed';
 
-const MAXIMO_BOTOES = 5;
-
-/** Até 5 números de página, centralizados na página atual. */
-function paginasVisiveis(atual: number, ultima: number): number[] {
-    const inicio = Math.max(1, Math.min(atual - Math.floor(MAXIMO_BOTOES / 2), ultima - MAXIMO_BOTOES + 1));
-    const fim = Math.min(ultima, inicio + MAXIMO_BOTOES - 1);
-
-    return Array.from({ length: fim - inicio + 1 }, (_, indice) => inicio + indice);
-}
-
-const classeNavegacao =
-    'inline-flex items-center gap-0.5 px-2 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-50 transition-colors cursor-pointer disabled:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60';
-
-export function Paginacao({ pagina, aoMudarPagina }: PaginacaoProps) {
-    const { current_page: atual, last_page: ultima, total, from, to } = pagina;
+/** `page` is the Laravel paginator response (current_page, last_page, total, from, to). */
+export function Pagination({ page, onPageChange }) {
+    const { current_page: current, last_page: last, total, from, to } = page;
+    const numbers = Array.from({ length: last }, (_, index) => index + 1).filter((number) => Math.abs(number - current) <= 2);
 
     return (
-        <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-surface-canvas border-t border-border-tint text-xs text-slate-600 select-none">
-            <span className="text-[11px] font-medium text-slate-500">
-                {total === 0 ? (
-                    'Nenhum registro'
-                ) : (
-                    <>
-                        Mostrando{' '}
-                        <strong className="text-slate-700 font-semibold">
-                            {from} a {to}
-                        </strong>{' '}
-                        de <strong className="text-slate-700 font-semibold">{total}</strong> registros
-                    </>
-                )}
-            </span>
+        <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-surface-canvas border-t border-border-tint text-[11px] text-slate-500">
+            <span>{total === 0 ? 'Nenhum registro' : `Mostrando ${from} a ${to} de ${total} registros`}</span>
 
-            <nav className="inline-flex items-center gap-1" aria-label="Paginação">
-                <button type="button" disabled={atual <= 1} onClick={() => aoMudarPagina(atual - 1)} className={classeNavegacao}>
-                    <Icone nome="chevron_left" className="text-[15px]" />
+            <nav className="inline-flex items-center gap-1">
+                <button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)} className={buttonClass}>
+                    <Icon name="chevron_left" className="text-[15px]" />
                     Anterior
                 </button>
-
-                {paginasVisiveis(atual, ultima).map((numero) => (
+                {numbers.map((number) => (
                     <button
-                        key={numero}
+                        key={number}
                         type="button"
-                        onClick={() => aoMudarPagina(numero)}
-                        aria-current={numero === atual ? 'page' : undefined}
-                        className={`w-6 h-6 inline-flex items-center justify-center text-[11px] rounded cursor-pointer ${
-                            numero === atual
-                                ? 'font-bold text-white bg-primary-strong'
-                                : 'font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50'
-                        }`}
+                        onClick={() => onPageChange(number)}
+                        className={`w-6 h-6 rounded cursor-pointer ${number === current ? 'font-bold text-white bg-primary-strong' : 'text-slate-700 bg-white border border-slate-200 hover:bg-slate-50'}`}
                     >
-                        {numero}
+                        {number}
                     </button>
                 ))}
-
-                <button type="button" disabled={atual >= ultima} onClick={() => aoMudarPagina(atual + 1)} className={classeNavegacao}>
+                <button type="button" disabled={current >= last} onClick={() => onPageChange(current + 1)} className={buttonClass}>
                     Próxima
-                    <Icone nome="chevron_right" className="text-[15px]" />
+                    <Icon name="chevron_right" className="text-[15px]" />
                 </button>
             </nav>
         </div>
@@ -2251,131 +1823,78 @@ export function Paginacao({ pagina, aoMudarPagina }: PaginacaoProps) {
 }
 ```
 
-### `resources/js/components/WidgetCondicao.tsx`
+### `resources/js/components/TemperatureChart.jsx`
 
-Quadradinho com o ícone e a descrição da condição (usa `visualDoClima`).
+Gráfico em SVG puro, sem biblioteca: linha com área em gradiente, um ponto por consulta (passe o mouse para ver data e temperatura) e o rótulo de **Pico**.
 
-```tsx
-import { capitalizar } from '../utils/formatadores';
-import { visualDoClima } from '../utils/iconeClima';
-import { Icone } from './Icone';
-
-export function WidgetCondicao({ descricao }: { descricao: string }) {
-    const visual = visualDoClima(descricao);
-
-    return (
-        <div className={`flex flex-col items-center justify-center p-2.5 rounded-lg border shadow-2xs w-24 ${visual.fundo} ${visual.borda}`}>
-            <Icone nome={visual.icone} preenchido={visual.preenchido} className={`text-3xl ${visual.corIcone}`} />
-            <span className="text-[11px] font-semibold text-slate-700 mt-1 text-center leading-tight">{capitalizar(descricao)}</span>
-        </div>
-    );
-}
-```
-
-### `resources/js/components/CurvaTemperatura.tsx`
-
-Gráfico em SVG puro, sem biblioteca: linha com área em gradiente, pontos (passe o mouse para ver data e temperatura), rótulo de **Pico** e rótulos da primeira e da última leitura. Os pontos ficam igualmente espaçados, um por consulta.
-
-```tsx
+```jsx
 import { useId } from 'react';
-import type { ConsultaClima } from '../types/clima';
-import { formatarDiaMesHora, formatarNumero, formatarTemperatura } from '../utils/formatadores';
+import { formatDayMonthTime, formatTemperature } from '../utils/format';
 
-interface CurvaTemperaturaProps {
-    /** Consultas em ordem cronológica (da mais antiga para a mais recente). */
-    consultas: ConsultaClima[];
-    selecionadaId: number | null;
-}
+const WIDTH = 260;
+const X_START = 30;
+const X_END = 230;
+const Y_TOP = 28;
+const Y_BOTTOM = 95;
 
-const LARGURA = 260;
-const ALTURA = 120;
-const X_INICIAL = 35;
-const X_FINAL = 235;
-const Y_TOPO = 28;
-const Y_BASE = 95;
-const LARGURA_ROTULO_PICO = 66;
+/** SVG line chart, one point per record. `records` must be in chronological order. */
+export function TemperatureChart({ records, selectedId }) {
+    const gradientId = useId();
 
-/** Rótulo acima do ponto; se o ponto estiver colado no topo (área do "Pico"), vai para baixo. */
-function posicaoRotulo(y: number): number {
-    return y < Y_TOPO + 12 ? y + 14 : y - 8;
-}
-
-export function CurvaTemperatura({ consultas, selecionadaId }: CurvaTemperaturaProps) {
-    const idGradiente = useId();
-
-    if (consultas.length < 2) {
+    if (records.length < 2) {
         return (
-            <div className="w-full h-36 bg-surface-canvas border border-border-subtle rounded-lg flex items-center justify-center px-6 text-center text-[11px] text-text-muted">
+            <div className="h-36 bg-surface-canvas border border-border-subtle rounded-lg flex items-center justify-center px-6 text-center text-[11px] text-text-muted">
                 É preciso ao menos duas consultas desta cidade para traçar a curva de variação.
             </div>
         );
     }
 
-    const temperaturas = consultas.map((consulta) => consulta.temperatura);
-    const minima = Math.min(...temperaturas);
-    const maxima = Math.max(...temperaturas);
-    const amplitude = maxima - minima || 1;
+    const temperatures = records.map((record) => record.temperatura);
+    const min = Math.min(...temperatures);
+    const max = Math.max(...temperatures);
 
-    const pontos = consultas.map((consulta, indice) => ({
-        consulta,
-        x: X_INICIAL + (indice * (X_FINAL - X_INICIAL)) / (consultas.length - 1),
-        y: maxima === minima ? (Y_TOPO + Y_BASE) / 2 : Y_BASE - ((consulta.temperatura - minima) / amplitude) * (Y_BASE - Y_TOPO),
+    const points = records.map((record, index) => ({
+        record,
+        x: X_START + (index * (X_END - X_START)) / (records.length - 1),
+        y: max === min ? (Y_TOP + Y_BOTTOM) / 2 : Y_BOTTOM - ((record.temperatura - min) / (max - min)) * (Y_BOTTOM - Y_TOP),
     }));
-
-    const linha = pontos.map(({ x, y }, indice) => `${indice === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
-    const area = `${linha} L ${X_FINAL} 105 L ${X_INICIAL} 105 Z`;
-
-    const primeiro = pontos[0];
-    const ultimo = pontos[pontos.length - 1];
-    const pico = pontos.reduce((maior, ponto) => (ponto.consulta.temperatura > maior.consulta.temperatura ? ponto : maior));
-    const xRotuloPico = Math.min(Math.max(pico.x - LARGURA_ROTULO_PICO / 2, 0), LARGURA - LARGURA_ROTULO_PICO);
+    const line = points.map(({ x, y }, index) => `${index === 0 ? 'M' : 'L'} ${x} ${y}`).join(' ');
+    const peak = points.find((point) => point.record.temperatura === max);
+    const peakLabelX = Math.min(Math.max(peak.x - 33, 0), WIDTH - 66);
 
     return (
-        <div className="w-full h-36 bg-surface-canvas border border-border-subtle rounded-lg p-2">
-            <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${LARGURA} ${ALTURA}`} preserveAspectRatio="none" role="img" aria-label="Curva de temperatura das consultas da cidade">
+        <div className="h-36 bg-surface-canvas border border-border-subtle rounded-lg p-2">
+            <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${WIDTH} 120`} preserveAspectRatio="none">
                 <defs>
-                    <linearGradient id={idGradiente} x1="0%" x2="0%" y1="0%" y2="100%">
+                    <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
                         <stop offset="0%" stopColor="#007BB3" stopOpacity="0.35" />
                         <stop offset="100%" stopColor="#007BB3" stopOpacity="0.02" />
                     </linearGradient>
                 </defs>
 
-                {[Y_TOPO, (Y_TOPO + Y_BASE) / 2, Y_BASE].map((y) => (
-                    <line key={y} x1={25} x2={245} y1={y} y2={y} stroke="#E2E8F0" strokeDasharray="3,3" strokeWidth={1} />
-                ))}
+                <path d={`${line} L ${X_END} 105 L ${X_START} 105 Z`} fill={`url(#${gradientId})`} />
+                <path d={line} fill="none" stroke="#007BB3" strokeWidth={2.5} strokeLinejoin="round" />
 
-                <path d={area} fill={`url(#${idGradiente})`} />
-                <path d={linha} fill="none" stroke="#007BB3" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} />
-
-                {pontos.map(({ consulta, x, y }) => {
-                    const destacado = consulta.id === selecionadaId || consulta === pico.consulta;
+                {points.map(({ record, x, y }) => {
+                    const highlighted = record.id === selectedId || record === peak.record;
 
                     return (
-                        <circle key={consulta.id} cx={x} cy={y} r={destacado ? 4 : 3} fill={destacado ? '#007BB3' : '#FFFFFF'} stroke={destacado ? '#FFFFFF' : '#007BB3'} strokeWidth={2}>
-                            <title>{`${formatarDiaMesHora(consulta.consultado_em)} · ${formatarTemperatura(consulta.temperatura)}`}</title>
+                        <circle key={record.id} cx={x} cy={y} r={highlighted ? 4 : 3} fill={highlighted ? '#007BB3' : '#FFFFFF'} stroke={highlighted ? '#FFFFFF' : '#007BB3'} strokeWidth={2}>
+                            <title>{`${formatDayMonthTime(record.consultado_em)} · ${formatTemperature(record.temperatura)}`}</title>
                         </circle>
                     );
                 })}
 
-                <g transform={`translate(${xRotuloPico}, 3)`}>
-                    <rect fill="#00283C" height={15} rx={3} width={LARGURA_ROTULO_PICO} />
-                    <text fill="#FFFFFF" fontFamily="sans-serif" fontSize={8} fontWeight="bold" textAnchor="middle" x={LARGURA_ROTULO_PICO / 2} y={11}>
-                        Pico: {formatarTemperatura(maxima)}
-                    </text>
-                </g>
-
-                <text fill="#64748B" fontFamily="monospace" fontSize={8} textAnchor="start" x={primeiro.x - 4} y={posicaoRotulo(primeiro.y)}>
-                    {formatarNumero(primeiro.consulta.temperatura)}°
-                </text>
-                <text fill="#007BB3" fontFamily="monospace" fontSize={8} fontWeight="bold" textAnchor="end" x={ultimo.x + 4} y={posicaoRotulo(ultimo.y)}>
-                    {formatarNumero(ultimo.consulta.temperatura)}°C
+                <rect x={peakLabelX} y={3} width={66} height={15} rx={3} fill="#00283C" />
+                <text x={peakLabelX + 33} y={14} fill="#FFFFFF" fontSize={8} fontWeight="bold" textAnchor="middle">
+                    Pico: {formatTemperature(max)}
                 </text>
 
-                <text fill="#94A3B8" fontFamily="monospace" fontSize={7.5} textAnchor="start" x={25} y={115}>
-                    {formatarDiaMesHora(consultas[0].consultado_em)}
+                <text x={X_START - 5} y={115} fill="#94A3B8" fontSize={7.5} fontFamily="monospace">
+                    {formatDayMonthTime(records[0].consultado_em)}
                 </text>
-                <text fill="#94A3B8" fontFamily="monospace" fontSize={7.5} textAnchor="end" x={245} y={115}>
-                    {formatarDiaMesHora(consultas[consultas.length - 1].consultado_em)}
+                <text x={X_END + 5} y={115} fill="#94A3B8" fontSize={7.5} fontFamily="monospace" textAnchor="end">
+                    {formatDayMonthTime(records[records.length - 1].consultado_em)}
                 </text>
             </svg>
         </div>
@@ -2383,393 +1902,256 @@ export function CurvaTemperatura({ consultas, selecionadaId }: CurvaTemperaturaP
 }
 ```
 
-### `resources/js/components/MiniEstatisticas.tsx`
+### `resources/js/components/TelemetryCard.jsx`
 
-Os três mini-cards: Mínima (com o horário), Média (com o número de consultas) e Máxima (com o horário).
+Card da direita: leitura selecionada, sensação, condição (ícone pelo `weatherIcon.js`), curva, Mínima/Média/Máxima, umidade e velocidade do vento. Sem seleção, mostra uma instrução.
 
-```tsx
-import type { EstatisticasTemperatura } from '../utils/estatisticas';
-import { formatarHora, formatarTemperatura } from '../utils/formatadores';
-import { Icone } from './Icone';
+```jsx
+import { capitalize, formatDayMonthTime, formatNumber, formatTemperature, formatTime } from '../utils/format';
+import { getWeatherVisual } from '../utils/weatherIcon';
+import { Icon } from './Icon';
+import { TemperatureChart } from './TemperatureChart';
 
-interface TileProps {
-    icone: string;
-    rotulo: string;
-    valor: string;
-    detalhe: string;
-    destaque: string;
-}
-
-function Tile({ icone, rotulo, valor, detalhe, destaque }: TileProps) {
+function StatTile({ icon, label, record, value, detail, className = 'text-slate-800' }) {
     return (
         <div className="bg-surface-tint border border-border-tint rounded-lg p-2 flex flex-col items-center text-center">
-            <div className={`flex items-center gap-0.5 text-[10px] font-bold ${destaque}`}>
-                <Icone nome={icone} className="text-[12px]" />
-                {rotulo}
-            </div>
-            <span className={`tabular-nums font-bold text-xs mt-0.5 ${rotulo === 'Máxima' ? 'text-rose-600' : 'text-slate-800'}`}>{valor}</span>
-            <span className="text-[9px] text-slate-500">{detalhe}</span>
+            <span className={`flex items-center gap-0.5 text-[10px] font-bold ${className}`}>
+                <Icon name={icon} className="text-[12px]" />
+                {label}
+            </span>
+            <span className={`tabular-nums font-bold text-xs ${className}`}>{formatTemperature(value ?? record.temperatura)}</span>
+            <span className="text-[9px] text-slate-500">{detail ?? `${formatTime(record.consultado_em)} h`}</span>
         </div>
     );
 }
 
-export function MiniEstatisticas({ estatisticas }: { estatisticas: EstatisticasTemperatura }) {
-    const { minima, maxima, media, quantidade } = estatisticas;
-
+function InfoTile({ icon, label, value }) {
     return (
-        <div className="grid grid-cols-3 gap-2">
-            <Tile icone="arrow_downward" rotulo="Mínima" valor={formatarTemperatura(minima.temperatura)} detalhe={`${formatarHora(minima.consultado_em)} h`} destaque="text-primary" />
-            <Tile icone="bar_chart" rotulo="Média" valor={formatarTemperatura(media)} detalhe={`${quantidade} consulta${quantidade === 1 ? '' : 's'}`} destaque="text-slate-600" />
-            <Tile icone="arrow_upward" rotulo="Máxima" valor={formatarTemperatura(maxima.temperatura)} detalhe={`${formatarHora(maxima.consultado_em)} h`} destaque="text-rose-600" />
+        <div className="bg-surface-canvas border border-border-subtle rounded-lg p-2 flex items-center gap-2">
+            <Icon name={icon} className="text-primary text-lg" />
+            <div className="flex flex-col">
+                <span className="text-[9px] text-slate-500">{label}</span>
+                <span className="text-xs font-bold text-slate-800 tabular-nums">{value}</span>
+            </div>
         </div>
     );
 }
-```
 
-### `resources/js/components/CardTelemetria.tsx`
-
-Card da direita: leitura selecionada, sensação, condição, curva, estatísticas, umidade e velocidade do vento. Sem seleção, mostra um estado vazio.
-
-```tsx
-import type { ConsultaClima } from '../types/clima';
-import { calcularEstatisticas, emOrdemCronologica } from '../utils/estatisticas';
-import { classificarUmidade, formatarDiaMesHora, formatarNumero, formatarTemperatura } from '../utils/formatadores';
-import { CurvaTemperatura } from './CurvaTemperatura';
-import { Icone } from './Icone';
-import { MiniEstatisticas } from './MiniEstatisticas';
-import { WidgetCondicao } from './WidgetCondicao';
-
-interface CardTelemetriaProps {
-    consulta: ConsultaClima | null;
-    /** Consultas da mesma cidade, como vêm da API (mais recente primeiro). */
-    consultasDaCidade: ConsultaClima[];
-    carregando: boolean;
-}
-
-export function CardTelemetria({ consulta, consultasDaCidade, carregando }: CardTelemetriaProps) {
-    if (consulta === null) {
+/** `cityRecords`: records of the selected city as returned by the API (newest first). */
+export function TelemetryCard({ record, cityRecords }) {
+    if (!record) {
         return (
-            <div className="lg:col-span-5 border border-border-tint rounded-xl p-6 bg-white shadow-sm flex flex-col items-center justify-center gap-2 text-center min-h-64">
-                <Icone nome="location_on" className="text-primary text-3xl" />
-                <p className="text-sm font-semibold text-slate-700">Nenhuma consulta selecionada</p>
-                <p className="text-xs text-text-muted">Consulte uma cidade ou clique em uma linha do histórico para ver os detalhes.</p>
+            <div className="lg:col-span-5 border border-border-tint rounded-xl p-6 bg-white shadow-sm text-center text-sm text-text-muted">
+                Consulte uma cidade ou clique em uma linha do histórico para ver os detalhes.
             </div>
         );
     }
 
-    const cronologicas = emOrdemCronologica(consultasDaCidade);
-    const estatisticas = calcularEstatisticas(cronologicas);
-    const ehUltimaLeitura = consultasDaCidade.length > 0 && consultasDaCidade[0].id === consulta.id;
-    const umidade = classificarUmidade(consulta.umidade);
+    const chronological = [...cityRecords].reverse();
+    const temperatures = cityRecords.map((item) => item.temperatura);
+    const min = cityRecords.find((item) => item.temperatura === Math.min(...temperatures));
+    const max = cityRecords.find((item) => item.temperatura === Math.max(...temperatures));
+    const average = temperatures.reduce((sum, value) => sum + value, 0) / temperatures.length;
+    const isLatest = cityRecords[0]?.id === record.id;
+    const condition = getWeatherVisual(record);
 
     return (
-        <div className={`lg:col-span-5 border border-border-tint rounded-xl p-4 bg-white shadow-sm flex flex-col gap-3.5 transition-opacity ${carregando ? 'opacity-70' : ''}`}>
+        <div className="lg:col-span-5 border border-border-tint rounded-xl p-4 bg-white shadow-sm flex flex-col gap-3.5">
             <div className="flex items-start justify-between gap-2">
-                <div className="flex items-start gap-2">
-                    <Icone nome="location_on" className="text-primary text-xl mt-0.5" />
-                    <h3 className="font-display text-base font-bold text-slate-900 leading-tight">Temperatura — {consulta.cidade}</h3>
-                </div>
-                {ehUltimaLeitura ? (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-[#E1EEF8] text-primary-dark rounded-full text-[11px] font-bold whitespace-nowrap">
-                        <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                        Última leitura
-                    </span>
-                ) : (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full text-[11px] font-bold whitespace-nowrap">
-                        <Icone nome="history" className="text-[13px]" />
-                        Leitura anterior
-                    </span>
-                )}
+                <h3 className="flex items-center gap-2 font-display text-base font-bold text-slate-900">
+                    <Icon name="location_on" className="text-primary text-xl" />
+                    Temperatura — {record.cidade}
+                </h3>
+                <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap ${isLatest ? 'bg-[#E1EEF8] text-primary-dark' : 'bg-slate-100 text-slate-600'}`}>
+                    {isLatest ? '● Última leitura' : 'Leitura anterior'}
+                </span>
             </div>
 
             <div className="bg-[#F3F8FC] border border-[#DEECF8] rounded-xl p-3 flex items-center justify-between gap-3">
-                <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-[#56738E] uppercase tracking-wider">Leitura em {formatarDiaMesHora(consulta.consultado_em)}</span>
-                    <div className="flex items-baseline gap-1 mt-0.5">
-                        <span className="font-display text-3xl font-extrabold text-slate-900 tabular-nums tracking-tight">{formatarNumero(consulta.temperatura)}</span>
-                        <span className="text-base font-bold text-primary">°C</span>
-                    </div>
-                    <div className="flex items-center gap-1 mt-1 text-[11px] text-slate-600 font-medium">
-                        <Icone nome="device_thermostat" className="text-primary text-sm" />
-                        Sensação: <strong className="text-slate-800 tabular-nums">{formatarTemperatura(consulta.sensacao_termica)}</strong>
-                    </div>
+                <div>
+                    <p className="text-[10px] font-bold text-[#56738E] uppercase tracking-wider">Leitura em {formatDayMonthTime(record.consultado_em)}</p>
+                    <p className="font-display text-3xl font-extrabold text-slate-900 tabular-nums">
+                        {formatNumber(record.temperatura)} <span className="text-base text-primary">°C</span>
+                    </p>
+                    <p className="flex items-center gap-1 text-[11px] text-slate-600">
+                        <Icon name="device_thermostat" className="text-primary text-sm" />
+                        Sensação: <strong className="tabular-nums">{formatTemperature(record.sensacao_termica)}</strong>
+                    </p>
                 </div>
-                <WidgetCondicao descricao={consulta.descricao} />
+                <div className={`flex flex-col items-center p-2.5 rounded-lg border w-24 ${condition.background} ${condition.border}`}>
+                    <Icon name={condition.icon} filled className={`text-3xl ${condition.color}`} />
+                    <span className={`text-[11px] font-semibold text-center leading-tight ${condition.labelColor}`}>{capitalize(record.descricao)}</span>
+                </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-1.5 font-bold text-slate-800 text-[11px] tracking-wide uppercase">
-                        <Icone nome="show_chart" className="text-primary text-base" />
-                        Curva de variação
-                    </div>
-                    {cronologicas.length > 1 && (
-                        <span className="text-[11px] tabular-nums text-slate-500">
-                            {formatarDiaMesHora(cronologicas[0].consultado_em)} – {formatarDiaMesHora(cronologicas[cronologicas.length - 1].consultado_em)}
-                        </span>
-                    )}
-                </div>
-                <CurvaTemperatura consultas={cronologicas} selecionadaId={consulta.id} />
+                <span className="flex items-center gap-1.5 font-bold text-slate-800 text-[11px] tracking-wide uppercase">
+                    <Icon name="show_chart" className="text-primary text-base" />
+                    Curva de variação
+                </span>
+                <TemperatureChart records={chronological} selectedId={record.id} />
             </div>
 
-            {estatisticas && <MiniEstatisticas estatisticas={estatisticas} />}
-
-            <div className="grid grid-cols-2 gap-2 pt-0.5">
-                <div className="bg-surface-canvas border border-border-subtle rounded-lg p-2 flex items-center gap-2">
-                    <Icone nome="water_drop" className="text-primary text-lg" />
-                    <div className="flex flex-col">
-                        <span className="text-[9px] font-medium text-slate-500 leading-none">Umidade relativa</span>
-                        <span className="text-xs font-bold text-slate-800 mt-0.5 tabular-nums">
-                            {consulta.umidade}% {umidade && <span className={`text-[10px] font-normal ${umidade.classe}`}>({umidade.rotulo})</span>}
-                        </span>
-                    </div>
+            {cityRecords.length > 0 && (
+                <div className="grid grid-cols-3 gap-2">
+                    <StatTile icon="arrow_downward" label="Mínima" record={min} className="text-primary" />
+                    <StatTile icon="bar_chart" label="Média" value={average} detail={`${cityRecords.length} consulta(s)`} />
+                    <StatTile icon="arrow_upward" label="Máxima" record={max} className="text-rose-600" />
                 </div>
-                <div className="bg-surface-canvas border border-border-subtle rounded-lg p-2 flex items-center gap-2">
-                    <Icone nome="air" className="text-primary text-lg" />
-                    <div className="flex flex-col">
-                        <span className="text-[9px] font-medium text-slate-500 leading-none">Velocidade do vento</span>
-                        <span className="text-xs font-bold text-slate-800 mt-0.5 tabular-nums">
-                            {consulta.vento_kmh === null ? '—' : `${formatarNumero(consulta.vento_kmh)} km/h`}
-                        </span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-```
-
-### `resources/js/components/PainelHistorico.tsx`
-
-Bloco do histórico: cabeçalho com Recarregar, filtros, erro de carregamento, tabela com paginação, o card e o rodapé com o total.
-
-```tsx
-import type { EstadoRequisicao } from '../hooks/useRequisicao';
-import type { ConsultaClima, FiltrosHistorico as Filtros, Paginado } from '../types/clima';
-import { CardTelemetria } from './CardTelemetria';
-import { FiltrosHistorico } from './FiltrosHistorico';
-import { Icone } from './Icone';
-import { Paginacao } from './Paginacao';
-import { TabelaHistorico } from './TabelaHistorico';
-
-interface PainelHistoricoProps {
-    historico: EstadoRequisicao<Paginado<ConsultaClima>>;
-    cidades: string[];
-    filtros: Filtros;
-    selecionada: ConsultaClima | null;
-    consultasDaCidade: ConsultaClima[];
-    carregandoCidade: boolean;
-    aoFiltrar: (filtros: Filtros) => void;
-    aoMudarPagina: (pagina: number) => void;
-    aoSelecionar: (consulta: ConsultaClima) => void;
-    aoRecarregar: () => void;
-}
-
-export function PainelHistorico({
-    historico,
-    cidades,
-    filtros,
-    selecionada,
-    consultasDaCidade,
-    carregandoCidade,
-    aoFiltrar,
-    aoMudarPagina,
-    aoSelecionar,
-    aoRecarregar,
-}: PainelHistoricoProps) {
-    const pagina = historico.dados;
-
-    return (
-        <section className="bg-white rounded-lg border border-border-strong p-5 shadow-sm flex flex-col gap-4">
-            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
-                <div className="flex items-start gap-2.5">
-                    <Icone nome="history_toggle_off" className="mt-0.5 text-primary text-2xl" />
-                    <div>
-                        <h2 className="font-display text-base font-bold text-slate-900 tracking-tight leading-tight">Histórico de Consultas</h2>
-                        <p className="text-xs text-slate-500 mt-0.5">Consultas meteorológicas registradas, das mais recentes para as mais antigas</p>
-                    </div>
-                </div>
-                <button
-                    type="button"
-                    onClick={aoRecarregar}
-                    disabled={historico.carregando}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F0F6FB] hover:bg-[#E2EDF7] border border-[#CDE1F2] text-xs font-semibold text-primary-dark rounded transition-colors cursor-pointer disabled:cursor-wait"
-                >
-                    <Icone nome="sync" className={`text-sm ${historico.carregando ? 'animate-spin' : ''}`} />
-                    Recarregar
-                </button>
-            </div>
-
-            <FiltrosHistorico cidades={cidades} filtrosAplicados={filtros} aoFiltrar={aoFiltrar} />
-
-            {historico.erro && (
-                <p role="alert" className="flex items-center gap-2 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
-                    <Icone nome="error" className="text-[16px] text-rose-600" />
-                    {historico.erro}
-                </p>
             )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start pt-1">
-                <div className="lg:col-span-7 border border-border-tint rounded-lg overflow-hidden">
-                    <TabelaHistorico
-                        consultas={pagina?.data ?? []}
-                        selecionadaId={selecionada?.id ?? null}
-                        carregando={historico.carregando}
-                        aoSelecionar={aoSelecionar}
-                    />
-                    {pagina && <Paginacao pagina={pagina} aoMudarPagina={aoMudarPagina} />}
-                </div>
-
-                <CardTelemetria consulta={selecionada} consultasDaCidade={consultasDaCidade} carregando={carregandoCidade} />
+            <div className="grid grid-cols-2 gap-2">
+                <InfoTile icon="water_drop" label="Umidade relativa" value={`${record.umidade}%`} />
+                <InfoTile icon="air" label="Velocidade do vento" value={record.vento_kmh === null ? '—' : `${formatNumber(record.vento_kmh)} km/h`} />
             </div>
-
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
-                <span>Mais recentes primeiro · A curva usa as consultas da cidade selecionada dentro do período filtrado.</span>
-                <span className="font-medium text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
-                    Histórico carregado: {pagina?.total ?? 0} registro(s)
-                </span>
-            </div>
-        </section>
+        </div>
     );
 }
 ```
 
 ### Raiz
 
-### `resources/js/App.tsx`
+### `resources/js/App.jsx`
 
-Estado da tela: filtros aplicados, página, versão, registro selecionado, consulta em andamento, erro e aviso.
-- Ao consultar: seleciona o registro devolvido, volta para a página 1 e incrementa a versão (recarrega histórico, card e cidades).
-- Se nada estiver selecionado, seleciona a primeira linha.
-- Se o registro selecionado mudar no servidor (consulta repetida), troca pela versão nova.
+Estado da tela e layout:
+- filtros, página, registro selecionado, consulta em andamento, erro e aviso;
+- `version` é um contador: incrementá-lo recarrega histórico, cidades e card (botão Recarregar e depois de cada consulta);
+- ao consultar, seleciona o registro devolvido e volta para a página 1;
+- se nada estiver selecionado, seleciona a primeira linha.
 
-```tsx
+```jsx
 import { useEffect, useRef, useState } from 'react';
-import { foiCancelada } from './api/client';
-import { registrarConsulta } from './api/clima';
-import { Alerta } from './components/Alerta';
-import { BarraConsulta } from './components/BarraConsulta';
-import { Header } from './components/Header';
-import { PainelHistorico } from './components/PainelHistorico';
-import { useCidadesConsultadas, useConsultasDaCidade, useHistorico } from './hooks/useHistorico';
-import { type ConsultaClima, FILTROS_VAZIOS, type FiltrosHistorico } from './types/clima';
+import { fetchHistory, fetchQueriedCities, isAbortError, registerWeatherQuery } from './api';
+import { Alert } from './components/Alert';
+import { EMPTY_FILTERS, HistoryFilters } from './components/HistoryFilters';
+import { HistoryTable } from './components/HistoryTable';
+import { Icon } from './components/Icon';
+import { LoopLogo } from './components/LoopLogo';
+import { Pagination } from './components/Pagination';
+import { SearchBar } from './components/SearchBar';
+import { TelemetryCard } from './components/TelemetryCard';
+import { useRequest } from './hooks/useRequest';
+import { toIso } from './utils/format';
 
 export function App() {
-    const [filtros, setFiltros] = useState<FiltrosHistorico>(FILTROS_VAZIOS);
-    const [pagina, setPagina] = useState(1);
-    const [versao, setVersao] = useState(0);
-    const [selecionada, setSelecionada] = useState<ConsultaClima | null>(null);
-    const [consultando, setConsultando] = useState(false);
-    const [erro, setErro] = useState<string | null>(null);
-    const [aviso, setAviso] = useState<string | null>(null);
-    const controleConsulta = useRef<AbortController | null>(null);
+    const [filters, setFilters] = useState(EMPTY_FILTERS);
+    const [page, setPage] = useState(1);
+    const [version, setVersion] = useState(0); // incrementing it reloads every list
+    const [selected, setSelected] = useState(null);
+    const [searching, setSearching] = useState(false);
+    const [error, setError] = useState(null);
+    const [notice, setNotice] = useState(null);
+    const searchController = useRef(null);
 
-    const historico = useHistorico(filtros, pagina, versao);
-    const cidades = useCidadesConsultadas(versao);
-    const { consultas: consultasDaCidade, carregando: carregandoCidade } = useConsultasDaCidade(selecionada?.cidade ?? null, filtros, versao);
+    const period = { from: toIso(filters.from), to: toIso(filters.to) };
+    const history = useRequest((signal) => fetchHistory({ city: filters.city, ...period, page, perPage: 10 }, signal), [filters, page, version]);
+    const cities = useRequest((signal) => fetchQueriedCities(signal), [version]);
+    const cityHistory = useRequest(
+        selected ? (signal) => fetchHistory({ city: selected.cidade, ...period, perPage: 50 }, signal) : null,
+        [selected?.cidade, filters, version],
+    );
+
+    // While a new city loads, the previous city's records are still in memory: keep only the selected city's.
+    const cityRecords = (cityHistory.data?.data ?? []).filter((record) => record.cidade === selected?.cidade);
 
     useEffect(() => {
-        const linhas = historico.dados?.data ?? [];
+        if (!selected && history.data?.data.length) setSelected(history.data.data[0]);
+    }, [history.data]);
 
-        if (selecionada === null) {
-            if (linhas.length > 0) {
-                setSelecionada(linhas[0]);
-            }
-
-            return;
-        }
-
-        const versaoAtualizada = linhas.find((linha) => linha.id === selecionada.id);
-
-        if (versaoAtualizada && versaoAtualizada.consultado_em !== selecionada.consultado_em) {
-            setSelecionada(versaoAtualizada);
-        }
-    }, [historico.dados, selecionada]);
-
-    async function consultar(cidade: string) {
-        controleConsulta.current?.abort();
-        const controle = new AbortController();
-        controleConsulta.current = controle;
-
-        setConsultando(true);
-        setErro(null);
-        setAviso(null);
+    async function search(city) {
+        const controller = new AbortController();
+        searchController.current = controller;
+        setSearching(true);
+        setError(null);
+        setNotice(null);
 
         try {
-            const resultado = await registrarConsulta(cidade, controle.signal);
-
-            setSelecionada(resultado.data);
-            setAviso(
-                resultado.atualizado
-                    ? `As condições em ${resultado.data.cidade} não mudaram desde a última consulta: só a data e a hora do registro foram atualizadas.`
-                    : null,
-            );
-            setPagina(1);
-            setVersao((atual) => atual + 1);
-        } catch (falha) {
-            if (foiCancelada(falha)) {
-                setAviso('Consulta cancelada.');
-
-                return;
+            const result = await registerWeatherQuery(city, controller.signal);
+            setSelected(result.data);
+            if (result.atualizado) {
+                setNotice(`As condições em ${result.data.cidade} não mudaram desde a última consulta: só a data e a hora do registro foram atualizadas.`);
             }
-
-            setErro(falha instanceof Error ? falha.message : 'Erro inesperado.');
+            setPage(1);
+            setVersion((current) => current + 1);
+        } catch (failure) {
+            if (isAbortError(failure)) setNotice('Consulta cancelada.');
+            else setError(failure.message);
         } finally {
-            if (controleConsulta.current === controle) {
-                controleConsulta.current = null;
-                setConsultando(false);
-            }
+            setSearching(false);
         }
-    }
-
-    function aplicarFiltros(novosFiltros: FiltrosHistorico) {
-        setFiltros(novosFiltros);
-        setPagina(1);
     }
 
     return (
-        <div className="min-h-screen flex flex-col items-center">
-            <Header />
-            <main className="w-full max-w-6xl px-4 py-6 flex flex-col gap-6">
-                <BarraConsulta consultando={consultando} aoConsultar={consultar} aoCancelar={() => controleConsulta.current?.abort()} />
+        <div className="min-h-screen">
+            <header className="bg-white border-b border-border-strong py-4 shadow-sm flex flex-col items-center gap-1.5">
+                <LoopLogo className="h-10 w-auto" />
+                <span className="text-xs text-text-muted font-medium">Consulta meteorológica</span>
+            </header>
 
-                {erro && <Alerta tipo="erro" mensagem={erro} aoFechar={() => setErro(null)} />}
-                {aviso && <Alerta tipo="info" mensagem={aviso} aoFechar={() => setAviso(null)} />}
+            <main className="max-w-6xl mx-auto px-4 py-6 flex flex-col gap-6">
+                <SearchBar searching={searching} onSearch={search} onCancel={() => searchController.current?.abort()} />
 
-                <PainelHistorico
-                    historico={historico}
-                    cidades={cidades}
-                    filtros={filtros}
-                    selecionada={selecionada}
-                    consultasDaCidade={consultasDaCidade}
-                    carregandoCidade={carregandoCidade}
-                    aoFiltrar={aplicarFiltros}
-                    aoMudarPagina={setPagina}
-                    aoSelecionar={setSelecionada}
-                    aoRecarregar={() => setVersao((atual) => atual + 1)}
-                />
+                {error && <Alert type="error" message={error} onClose={() => setError(null)} />}
+                {notice && <Alert type="info" message={notice} onClose={() => setNotice(null)} />}
+
+                <section className="bg-white rounded-lg border border-border-strong p-5 shadow-sm flex flex-col gap-4">
+                    <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+                        <div className="flex items-start gap-2.5">
+                            <Icon name="history_toggle_off" className="text-primary text-2xl" />
+                            <div>
+                                <h2 className="font-display text-base font-bold text-slate-900">Histórico de Consultas</h2>
+                                <p className="text-xs text-slate-500">Consultas meteorológicas registradas, das mais recentes para as mais antigas</p>
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setVersion((current) => current + 1)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F0F6FB] hover:bg-[#E2EDF7] border border-[#CDE1F2] text-xs font-semibold text-primary-dark rounded cursor-pointer"
+                        >
+                            <Icon name="sync" className={`text-sm ${history.loading ? 'animate-spin' : ''}`} />
+                            Recarregar
+                        </button>
+                    </div>
+
+                    <HistoryFilters
+                        cities={cities.data ?? []}
+                        filters={filters}
+                        onFilter={(newFilters) => {
+                            setFilters(newFilters);
+                            setPage(1);
+                        }}
+                    />
+
+                    {history.error && <p className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">{history.error}</p>}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                        <div className="lg:col-span-7 border border-border-tint rounded-lg overflow-hidden">
+                            <HistoryTable records={history.data?.data ?? []} selectedId={selected?.id} loading={history.loading} onSelect={setSelected} />
+                            {history.data && <Pagination page={history.data} onPageChange={setPage} />}
+                        </div>
+                        <TelemetryCard record={selected} cityRecords={cityRecords} />
+                    </div>
+
+                    <p className="pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+                        Mais recentes primeiro · Histórico carregado: {history.data?.total ?? 0} registro(s)
+                    </p>
+                </section>
             </main>
         </div>
     );
 }
 ```
 
-### `resources/js/main.tsx`
+### `resources/js/main.jsx`
 
 Ponto de entrada: monta o `App` no `#app` da view Blade.
 
-```tsx
+```jsx
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 
-const raiz = document.getElementById('app');
-
-if (raiz === null) {
-    throw new Error('Elemento #app não encontrado em resources/views/app.blade.php.');
-}
-
-createRoot(raiz).render(
+createRoot(document.getElementById('app')).render(
     <StrictMode>
         <App />
     </StrictMode>,
@@ -2780,9 +2162,8 @@ createRoot(raiz).render(
 
 ```bash
 php artisan optimize:clear       # obrigatório: limpa o cache de rotas
-php artisan migrate              # cria a coluna vento_kmh
-php artisan test                 # esperado: 57 testes passando
-npx tsc --noEmit                 # checagem de tipos, sem erros
+php artisan migrate              # cria as colunas vento_kmh, condicao_id e icone
+php artisan test                 # esperado: 60 testes passando
 
 # desenvolvimento (2 terminais)
 php artisan serve
@@ -2814,6 +2195,8 @@ Exemplo de resposta do histórico paginado:
       "umidade": 34,
       "descricao": "céu limpo",
       "vento_kmh": 14,
+      "condicao_id": 800,
+      "icone": "01d",
       "consultado_em": "2026-10-04T21:25:10.000000Z"
     }
   ],

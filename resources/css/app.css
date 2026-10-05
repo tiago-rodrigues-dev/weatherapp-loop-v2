@@ -4,6 +4,35 @@
 @source '../../storage/framework/views/*.php';
 
 @theme {
-    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
-        'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    --font-display: 'Plus Jakarta Sans', 'Inter', sans-serif;
+
+    --color-primary: #007bb3;
+    --color-primary-strong: #00608f;
+    --color-primary-hover: #004c73;
+    --color-primary-dark: #005b80;
+    --color-brand-deep: #003e53;
+    --color-brand-night: #00283c;
+    --color-brand-accent: #00a1da;
+
+    --color-surface-page: #f3f4f6;
+    --color-surface-canvas: #f8fafc;
+    --color-surface-subtle: #f1f5f9;
+    --color-surface-tint: #f1f6fb;
+
+    --color-border-subtle: #e2e8f0;
+    --color-border-strong: #cbd5e1;
+    --color-border-tint: #d5e2ee;
+
+    --color-text-muted: #64748b;
+    --color-on-surface: #111c2d;
+}
+
+.material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    user-select: none;
+}
+
+.material-symbols-outlined.filled {
+    font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24;
 }
